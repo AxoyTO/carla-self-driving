@@ -6,10 +6,14 @@ import torch.optim as optim
 import torch.nn.functional as F
 from collections import OrderedDict # For creating dicts for model input
 from typing import Dict # For type hinting
+import os # For os.makedirs and os.path.join
+import logging # For logging save/load actions
 
 from .base_agent import BaseAgent
 # from ..models.dqn_model import DQNModel # Assuming you have a DQNModel class
 # from ..replay_buffers.uniform_replay_buffer import UniformReplayBuffer # Or any other buffer
+
+logger = logging.getLogger(__name__) # Logger for this module
 
 class DQNAgent(BaseAgent):
     def __init__(self, observation_space, action_space, model, replay_buffer,
@@ -17,12 +21,13 @@ class DQNAgent(BaseAgent):
                  device='cpu'):
         super().__init__(observation_space, action_space)
 
-        self.model = model.to(device) # Q-Network
-        self.target_model = type(model)(*model.get_constructor_args()).to(device) # Target Q-Network
-        self.target_model.load_state_dict(self.model.state_dict())
-        self.target_model.eval()
+        self.model_constructor_args = model.get_constructor_args() # Store for reconstruction if needed
+        self.q_network = model.to(device) # Renamed from self.model for clarity
+        self.target_q_network = type(model)(*self.model_constructor_args).to(device) # Reconstruct target
+        self.target_q_network.load_state_dict(self.q_network.state_dict())
+        self.target_q_network.eval()
 
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        self.optimizer = optim.Adam(self.q_network.parameters(), lr=lr)
         self.replay_buffer = replay_buffer
         
         self.lr = lr
@@ -55,10 +60,10 @@ class DQNAgent(BaseAgent):
             # Exploit: select the action with max Q-value
             obs_tensor_dict = self._observation_to_tensor_dict(observation)
             
-            self.model.eval()  # Set model to evaluation mode
+            self.q_network.eval()  # Set model to evaluation mode
             with torch.no_grad():
-                action_values = self.model(obs_tensor_dict)
-            self.model.train()  # Set model back to train mode
+                action_values = self.q_network(obs_tensor_dict)
+            self.q_network.train()  # Set model back to train mode
             return np.argmax(action_values.cpu().data.numpy())
         else:
             # Explore: select a random action
@@ -80,13 +85,13 @@ class DQNAgent(BaseAgent):
         dones = experiences_dict['dones']
 
         # Get max predicted Q values (for next states) from target model
-        Q_targets_next = self.target_model(next_states_dict).detach().max(1)[0].unsqueeze(1)
+        Q_targets_next = self.target_q_network(next_states_dict).detach().max(1)[0].unsqueeze(1)
         
         # Compute Q targets for current states 
         Q_targets = rewards + (self.gamma * Q_targets_next * (1 - dones))
 
         # Get expected Q values from local model
-        Q_expected = self.model(states_dict).gather(1, actions)
+        Q_expected = self.q_network(states_dict).gather(1, actions)
 
         # Compute loss
         loss = F.mse_loss(Q_expected, Q_targets)
@@ -94,10 +99,10 @@ class DQNAgent(BaseAgent):
         # Minimize the loss
         self.optimizer.zero_grad()
         loss.backward()
-        # torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0) # Optional: Gradient clipping
+        # torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), 1.0) # Optional: Gradient clipping
         self.optimizer.step()
 
-        self._soft_update(self.model, self.target_model, self.tau)
+        self._soft_update(self.q_network, self.target_q_network, self.tau)
         
         return loss.item()  # Return loss for logging
 
@@ -113,17 +118,74 @@ class DQNAgent(BaseAgent):
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
             target_param.data.copy_(tau*local_param.data + (1.0-tau)*target_param.data)
     
-    # Placeholder for model saving/loading (can be part of BaseAgent or here)
-    # def save(self, filepath): 
-    #     torch.save(self.model.state_dict(), filepath + "_qnetwork.pth")
-    #     torch.save(self.target_model.state_dict(), filepath + "_target_qnetwork.pth")
-    #     torch.save(self.optimizer.state_dict(), filepath + "_optimizer.pth")
+    def save(self, directory_path, model_name="dqn_agent"):
+        """Saves the Q-network, target Q-network, and optimizer states."""
+        try:
+            if not os.path.exists(directory_path):
+                os.makedirs(directory_path)
+                logger.info(f"Created directory for saving models: {directory_path}")
 
-    # def load(self, filepath):
-    #     self.model.load_state_dict(torch.load(filepath + "_qnetwork.pth", map_location=self.device))
-    #     self.target_model.load_state_dict(torch.load(filepath + "_target_qnetwork.pth", map_location=self.device))
-    #     self.optimizer.load_state_dict(torch.load(filepath + "_optimizer.pth"))
-    #     self.target_model.eval()
+            q_network_path = os.path.join(directory_path, f"{model_name}_q_network.pth")
+            target_q_network_path = os.path.join(directory_path, f"{model_name}_target_q_network.pth")
+            optimizer_path = os.path.join(directory_path, f"{model_name}_optimizer.pth")
+            # Optional: Save model constructor args if they are complex or not easily reproducible
+            # constructor_args_path = os.path.join(directory_path, f"{model_name}_constructor_args.pkl")
+
+            torch.save(self.q_network.state_dict(), q_network_path)
+            torch.save(self.target_q_network.state_dict(), target_q_network_path)
+            torch.save(self.optimizer.state_dict(), optimizer_path)
+            # import pickle
+            # with open(constructor_args_path, 'wb') as f:
+            #    pickle.dump(self.model_constructor_args, f)
+            
+            logger.info(f"Saved DQN agent models to {directory_path} with prefix '{model_name}'")
+        except Exception as e:
+            logger.error(f"Error saving DQN agent models: {e}", exc_info=True)
+
+    def load(self, directory_path, model_name="dqn_agent", map_location=None):
+        """Loads the Q-network, target Q-network, and optimizer states."""
+        try:
+            q_network_path = os.path.join(directory_path, f"{model_name}_q_network.pth")
+            target_q_network_path = os.path.join(directory_path, f"{model_name}_target_q_network.pth")
+            optimizer_path = os.path.join(directory_path, f"{model_name}_optimizer.pth")
+            # constructor_args_path = os.path.join(directory_path, f"{model_name}_constructor_args.pkl")
+
+            if not os.path.exists(q_network_path):
+                logger.error(f"Q-Network model file not found at {q_network_path}")
+                return False # Indicate failure
+
+            # Load constructor args if saved and needed for model reconstruction
+            # This DQNAgent already reconstructs target_model using stored args,
+            # so primary model reconstruction might be handled by whoever creates DQNAgent instance.
+            # import pickle
+            # if os.path.exists(constructor_args_path):
+            #     with open(constructor_args_path, 'rb') as f:
+            #         loaded_constructor_args = pickle.load(f)
+            #         # Potentially re-initialize self.q_network here if its structure could change
+            #         # self.q_network = type(self.q_network)(*loaded_constructor_args).to(self.device)
+
+            device_to_load_on = map_location if map_location else self.device
+
+            self.q_network.load_state_dict(torch.load(q_network_path, map_location=device_to_load_on))
+            if os.path.exists(target_q_network_path):
+                self.target_q_network.load_state_dict(torch.load(target_q_network_path, map_location=device_to_load_on))
+            else: # Fallback: copy from loaded q_network if target is missing (e.g. older save)
+                self.target_q_network.load_state_dict(self.q_network.state_dict())
+                logger.warning(f"Target Q-Network model file not found at {target_q_network_path}. Copied from Q-Network.")
+            
+            if os.path.exists(optimizer_path):
+                self.optimizer.load_state_dict(torch.load(optimizer_path, map_location=device_to_load_on))
+            else:
+                logger.warning(f"Optimizer state file not found at {optimizer_path}. Optimizer not loaded.")
+
+            self.q_network.train() # Default to train mode after loading for continued training
+            self.target_q_network.eval() # Target network is always in eval mode except during direct state_dict load
+            
+            logger.info(f"Loaded DQN agent models from {directory_path} with prefix '{model_name}'")
+            return True # Indicate success
+        except Exception as e:
+            logger.error(f"Error loading DQN agent models: {e}", exc_info=True)
+            return False # Indicate failure
 
     def _batch_experiences(self, experiences_list):
         """Converts a list of Experience namedtuples (where state/next_state are dicts)

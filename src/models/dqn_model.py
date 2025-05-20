@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import gymnasium as gym # To access space types if needed for introspection
 from collections import OrderedDict
+from typing import Dict # For type hinting
 
 class DQNModel(nn.Module):
     def __init__(self, observation_space: gym.spaces.Dict, n_actions: int):
@@ -172,11 +173,11 @@ class DQNModel(nn.Module):
             length = (length + 2 * padding - (kernels[i] - 1) - 1) // strides[i] + 1
         return length
 
-    def forward(self, obs_dict: OrderedDict[str, torch.Tensor]):
+    def forward(self, obs_dict: Dict[str, torch.Tensor]):
         """
         Forward pass through the network.
         Args:
-            obs_dict (OrderedDict[str, torch.Tensor]): Dictionary of observation tensors.
+            obs_dict (Dict[str, torch.Tensor]): Dictionary of observation tensors.
         Returns:
             torch.Tensor: Q-values for each action (batch_size, n_actions).
         """
@@ -267,7 +268,7 @@ class Permute(nn.Module):
 #     print("\nInput shapes:")
 #     for key, val in dummy_input_dict.items():
 #         print(f"  {key}: {val.shape}")
-
+    
 #     # Pass the dummy input through the model
 #     output = model(dummy_input_dict)
 #     print("\nOutput shape (Q-values per action):", output.shape)
