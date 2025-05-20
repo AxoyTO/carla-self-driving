@@ -10,6 +10,12 @@ from .base_env import BaseEnv
 import gymnasium as gym # Changed from # import gymnasium as gym
 from gymnasium import spaces # Changed from # from gymnasium import spaces
 
+from .sensors import camera_handler # Import the new camera handler
+from .sensors import lidar_handler # Import the new lidar handler
+from .sensors import radar_handler # Import the new radar handler
+from .sensors import gnss_imu_handler # Import the new gnss_imu_handler
+from .sensors import collision_handler # Import the new collision handler
+
 # Define a class to store sensor data temporarily for synchronization
 # class SensorData: # This class is no longer used for multiple sensors
 #     def __init__(self):
@@ -79,7 +85,7 @@ class CarlaEnv(BaseEnv):
             'radar': None
         }
         # To store processed collision info (count, intensity)
-        self.collision_info = {'count': 0, 'last_intensity': 0.0}
+        self.collision_info = {'count': 0, 'last_intensity': 0.0, 'last_other_actor': None}
 
         # Store available spawn points
         self._spawn_points = []
@@ -116,32 +122,20 @@ class CarlaEnv(BaseEnv):
 
         # New Observation Space using gym.spaces.Dict
         obs_spaces = OrderedDict()
-        obs_spaces['rgb_camera'] = spaces.Box(
-            low=0, high=255, 
-            shape=(3, self.image_height, self.image_width), # C, H, W
-            dtype=np.uint8
+        # Get camera observation spaces from the handler
+        camera_obs_spaces = camera_handler.get_camera_observation_spaces(self.image_width, self.image_height)
+        obs_spaces.update(camera_obs_spaces)
+        
+        # LIDAR - using lidar_handler
+        obs_spaces['lidar'] = lidar_handler.get_lidar_observation_space(
+            num_points=self.lidar_config['num_points_processed']
         )
-        obs_spaces['depth_camera'] = spaces.Box(
-            low=0.0, high=1.0, # Normalized depth
-            shape=(1, self.image_height, self.image_width), # C, H, W (single channel)
-            dtype=np.float32
-        )
-        obs_spaces['semantic_camera'] = spaces.Box(
-            low=0, high=22, # Max 22 classes in CARLA by default for Town03 (check for other towns)
-            shape=(1, self.image_height, self.image_width), # C, H, W (single channel with class labels)
-            dtype=np.uint8
-        )
-        obs_spaces['lidar'] = spaces.Box(
-            low=-np.inf, high=np.inf,
-            shape=(self.lidar_config['num_points_processed'], 3), # N_points x (x,y,z)
-            dtype=np.float32
-        )
-        obs_spaces['gnss'] = spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32) # lat, lon, alt
-        obs_spaces['imu'] = spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32) # accel(3), gyro(3)
-        obs_spaces['radar'] = spaces.Box(
-            low=-np.inf, high=np.inf,
-            shape=(self.radar_config['max_detections_processed'], 4), # M_detections x (range, azimuth, altitude_angle, velocity)
-            dtype=np.float32
+        # GNSS & IMU - using gnss_imu_handler
+        obs_spaces['gnss'] = gnss_imu_handler.get_gnss_observation_space()
+        obs_spaces['imu'] = gnss_imu_handler.get_imu_observation_space()
+        # RADAR - using radar_handler
+        obs_spaces['radar'] = radar_handler.get_radar_observation_space(
+            max_detections=self.radar_config['max_detections_processed']
         )
         # Adding collision data to observation space (optional, can also just be used for reward/done)
         # For simplicity, let's not add collision to observation for now, but use self.collision_info directly.
@@ -181,7 +175,7 @@ class CarlaEnv(BaseEnv):
         # Initialize/clear sensor data stores
         for key in self.latest_sensor_data:
             self.latest_sensor_data[key] = None
-        self.collision_info = {'count': 0, 'last_intensity': 0.0}
+        self.collision_info = {'count': 0, 'last_intensity': 0.0, 'last_other_actor': None}
 
         # Select start and target spawn points
         if not self._spawn_points or len(self._spawn_points) < 2:
@@ -340,107 +334,41 @@ class CarlaEnv(BaseEnv):
         
         obs_data = OrderedDict()
 
-        # RGB Camera
-        rgb_img_data = self.latest_sensor_data.get('rgb_camera')
-        if rgb_img_data is not None:
-            img_bgra = np.array(rgb_img_data.raw_data).reshape((rgb_img_data.height, rgb_img_data.width, 4))
-            img_rgb = img_bgra[:, :, :3][:, :, ::-1] # BGRA to BGR to RGB
-            obs_data['rgb_camera'] = np.transpose(img_rgb, (2, 0, 1)).astype(np.uint8)
-        else:
-            obs_data['rgb_camera'] = np.zeros(self._observation_space['rgb_camera'].shape, dtype=np.uint8)
-
-        # Depth Camera
-        depth_img_data = self.latest_sensor_data.get('depth_camera')
-        if depth_img_data is not None:
-            depth_bgra = np.array(depth_img_data.raw_data).reshape((depth_img_data.height, depth_img_data.width, 4))
-            # The R channel of the depth camera image contains the normalized depth.
-            # See: https://carla.readthedocs.io/en/latest/ref_sensors/#depth-camera
-            # Formula: (R + G*256 + B*256*256) / (256*256*256 - 1)
-            # For "sensor.camera.depth" (not "logarithmic_depth"), raw data is BGRA.
-            # Normalized depth is ((R + G * 256 + B * 256 * 256) / (256**3 - 1)) * 1000
-            # Simpler interpretation often used: values are directly meters if not log_depth.
-            # Let's process it as per documentation for normalized depth:
-            depth_R = depth_bgra[:,:,2].astype(np.float32) / 255.0 # R channel
-            depth_G = depth_bgra[:,:,1].astype(np.float32) / 255.0 # G channel
-            depth_B = depth_bgra[:,:,0].astype(np.float32) / 255.0 # B channel
-            normalized_depth = (depth_R * 255.0 * 256.0 * 256.0 + depth_G * 255.0 * 256.0 + depth_B * 255.0) / (255.0 * 256.0 * 256.0 + 255.0 * 256.0 + 255.0)
-            # A more common interpretation for 'sensor.camera.depth' is that it's already encoded.
-            # R channel represents depth * 1000 / (2^24 -1) or similar.
-            # Let's assume direct normalized depth in R channel for now as per some examples.
-            # If it's "logarithmic_depth", the formula is different.
-            # For standard depth camera, pixel values are (R + G*256 + B*256*256).
-            # normalized_depth = (depth_bgra[:,:,2] + depth_bgra[:,:,1]*256 + depth_bgra[:,:,0]*256*256) / (256*256*256 -1)
-            # Correct processing for 'sensor.camera.depth' (non-logarithmic):
-            # raw_data is BGRA. Each pixel = R + G*256 + B*256*256. Max value = 256^3 - 1.
-            # Depth in meters = (R + G*256 + B*256*256) / (256^3 - 1) * 1000.0 (for range 1km)
-            # To get normalized [0,1] depth:
-            array = depth_bgra.astype(np.float32)
-            normalized_depth_map = np.dot(array[:, :, :3], [65536.0, 256.0, 1.0]) # BGR to int
-            normalized_depth_map /= 16777215.0  # (256^3 - 1), for normalization to [0,1]
-            obs_data['depth_camera'] = normalized_depth_map[np.newaxis, :, :].astype(np.float32) # Add channel dim
-        else:
-            obs_data['depth_camera'] = np.zeros(self._observation_space['depth_camera'].shape, dtype=np.float32)
-
-        # Semantic Segmentation Camera
-        seg_img_data = self.latest_sensor_data.get('semantic_camera')
-        if seg_img_data is not None:
-            # The R channel contains the semantic tag
-            seg_array = np.array(seg_img_data.raw_data).reshape((seg_img_data.height, seg_img_data.width, 4))
-            obs_data['semantic_camera'] = seg_array[:, :, 2][np.newaxis, :, :].astype(np.uint8) # R channel, add channel dim
-        else:
-            obs_data['semantic_camera'] = np.zeros(self._observation_space['semantic_camera'].shape, dtype=np.uint8)
+        # --- Camera Data Processing using Camera Handler ---
+        obs_data['rgb_camera'] = camera_handler.process_rgb_camera_data(
+            self.latest_sensor_data.get('rgb_camera'), 
+            self._observation_space['rgb_camera'].shape
+        )
+        obs_data['depth_camera'] = camera_handler.process_depth_camera_data(
+            self.latest_sensor_data.get('depth_camera'), 
+            self._observation_space['depth_camera'].shape
+        )
+        obs_data['semantic_camera'] = camera_handler.process_semantic_camera_data(
+            self.latest_sensor_data.get('semantic_camera'), 
+            self._observation_space['semantic_camera'].shape
+        )
             
-        # LIDAR
-        lidar_data = self.latest_sensor_data.get('lidar')
-        if lidar_data is not None:
-            # Process points: carla.LidarMeasurement has methods to save_to_disk or iterate points
-            # Each point is a carla.Location (x, y, z) relative to the sensor
-            points = np.array([[p.point.x, p.point.y, p.point.z] for p in lidar_data])
-            # Ensure fixed size (subsample or pad)
-            num_processed_points = self.lidar_config['num_points_processed']
-            if len(points) > num_processed_points:
-                # Subsample (randomly or first N)
-                indices = np.random.choice(len(points), num_processed_points, replace=False)
-                processed_points = points[indices, :]
-            elif len(points) < num_processed_points:
-                processed_points = np.zeros((num_processed_points, 3), dtype=np.float32)
-                if len(points) > 0:
-                    processed_points[:len(points), :] = points
-            else: # len(points) == num_processed_points
-                processed_points = points
-            obs_data['lidar'] = processed_points.astype(np.float32)
-        else:
-            obs_data['lidar'] = np.zeros(self._observation_space['lidar'].shape, dtype=np.float32)
+        # LIDAR - using lidar_handler
+        obs_data['lidar'] = lidar_handler.process_lidar_data(
+            self.latest_sensor_data.get('lidar'),
+            num_target_points=self.lidar_config['num_points_processed']
+        )
 
-        # GNSS
-        gnss_data = self.latest_sensor_data.get('gnss')
-        if gnss_data is not None:
-            obs_data['gnss'] = np.array([gnss_data.latitude, gnss_data.longitude, gnss_data.altitude], dtype=np.float32)
-        else:
-            obs_data['gnss'] = np.zeros(self._observation_space['gnss'].shape, dtype=np.float32)
+        # GNSS & IMU - using gnss_imu_handler
+        obs_data['gnss'] = gnss_imu_handler.process_gnss_data(
+            self.latest_sensor_data.get('gnss')
+        )
+        obs_data['imu'] = gnss_imu_handler.process_imu_data(
+            self.latest_sensor_data.get('imu')
+        )
 
-        # IMU
-        imu_data = self.latest_sensor_data.get('imu')
-        if imu_data is not None:
-            obs_data['imu'] = np.array([
-                imu_data.accelerometer.x, imu_data.accelerometer.y, imu_data.accelerometer.z,
-                imu_data.gyroscope.x, imu_data.gyroscope.y, imu_data.gyroscope.z
-            ], dtype=np.float32)
-        else:
-            obs_data['imu'] = np.zeros(self._observation_space['imu'].shape, dtype=np.float32)
-            
-        # RADAR
+        # RADAR - using radar_handler
         radar_data = self.latest_sensor_data.get('radar')
-        if radar_data is not None: # carla.RadarMeasurement
-            detections_list = []
-            for detection in radar_data: # Iterate carla.RadarDetection
-                detections_list.append([detection.depth, detection.azimuth, detection.altitude, detection.velocity])
-            
-            processed_detections = np.zeros((self.radar_config['max_detections_processed'], 4), dtype=np.float32)
-            num_to_take = min(len(detections_list), self.radar_config['max_detections_processed'])
-            if num_to_take > 0:
-                processed_detections[:num_to_take, :] = np.array(detections_list[:num_to_take])
-            obs_data['radar'] = processed_detections
+        if radar_data is not None: 
+            obs_data['radar'] = radar_handler.process_radar_data(
+                radar_data,
+                max_target_detections=self.radar_config['max_detections_processed']
+            )
         else:
             obs_data['radar'] = np.zeros(self._observation_space['radar'].shape, dtype=np.float32)
 
@@ -577,166 +505,100 @@ class CarlaEnv(BaseEnv):
             # pass # Original pass was here, logger.debug serves a similar purpose if enabled
 
     def _setup_sensors(self):
-        if self.vehicle is None:
-            self.logger.warning("Cannot setup sensors: vehicle is None.")
+        """
+        Set up all sensors attached to the vehicle.
+        This now calls the individual setup functions from the sensor handlers.
+        """
+        # Clean up existing sensors first, just in case
+        # This is important if reset() is called multiple times
+        for sensor in self.sensor_list:
+            if sensor and sensor.is_alive: # Check if sensor object exists and is alive
+                sensor.destroy()
+                self.logger.debug(f"Destroyed sensor: {sensor.id}")
+        self.sensor_list = []
+        self.logger.info("Destroyed existing sensors before setting up new ones.")
+
+        if not self.vehicle:
+            self.logger.error("Vehicle not spawned before setting up sensors.")
             return
+
+        # blueprint_library = self.world.get_blueprint_library() # No longer needed here, handlers get it
+        world_weak_ref = weakref.ref(self) # Pass weakref of carla_env instance
+
+        # Define sensor transforms (relative to the vehicle)
+        # These can be customized as needed
+        rgb_cam_transform = carla.Transform(carla.Location(x=1.5, z=2.4))
+        depth_cam_transform = carla.Transform(carla.Location(x=1.5, y=0.1, z=2.4)) # Small offset for clarity
+        seg_cam_transform = carla.Transform(carla.Location(x=1.5, y=-0.1, z=2.4))   # Small offset
+        lidar_transform = carla.Transform(carla.Location(x=0.0, z=2.5))      # On the roof
+        radar_transform = carla.Transform(carla.Location(x=2.0, z=1.0))      # Front bumper
+        gnss_transform = carla.Transform(carla.Location(x=0.0, z=2.0))       # Roof
+        imu_transform = carla.Transform(carla.Location(x=0.0, z=1.5))        # Approx CoM
+        collision_transform = carla.Transform(carla.Location(x=0.0, z=0.0))  # At vehicle origin
+
+        # RGB Camera
+        rgb_camera_actor = camera_handler.setup_rgb_camera(
+            self.world, self.vehicle, world_weak_ref,
+            image_width=self.image_width, image_height=self.image_height, 
+            fov=self.fov, sensor_tick=str(self.timestep), transform=rgb_cam_transform
+        )
+        if rgb_camera_actor: self.sensor_list.append(rgb_camera_actor)
         
-        # Calls to individual sensor setup methods
-        self._setup_rgb_camera()
-        self._setup_depth_camera()
-        self._setup_semantic_segmentation_camera()
-        self._setup_lidar_sensor()
-        self._setup_collision_sensor() # collision_info is updated in its callback
-        self._setup_gnss_sensor()
-        self._setup_imu_sensor()
-        self._setup_radar_sensor()
+        # Depth Camera
+        depth_camera_actor = camera_handler.setup_depth_camera(
+            self.world, self.vehicle, world_weak_ref,
+            image_width=self.image_width, image_height=self.image_height,
+            fov=self.fov, sensor_tick=str(self.timestep), transform=depth_cam_transform
+        )
+        if depth_camera_actor: self.sensor_list.append(depth_camera_actor)
 
-        # Allow sensors to send first batch of data
-        if self.world.get_settings().synchronous_mode:
-            self.world.tick() 
-
-    def _setup_rgb_camera(self):
-        blueprint_library = self.world.get_blueprint_library()
-        camera_bp = blueprint_library.find('sensor.camera.rgb')
-        camera_bp.set_attribute('image_size_x', str(self.image_width))
-        camera_bp.set_attribute('image_size_y', str(self.image_height))
-        camera_bp.set_attribute('fov', str(self.fov))
-        camera_bp.set_attribute('sensor_tick', str(self.timestep))
-        camera_transform = carla.Transform(carla.Location(x=1.5, z=2.4))
-        camera = self.world.spawn_actor(camera_bp, camera_transform, attach_to=self.vehicle)
-        self.sensor_list.append(camera)
-        self.logger.info(f"Spawned RGB Camera: {camera.id}")
-        weak_self = weakref.ref(self)
-        def callback(data):
-            me = weak_self()
-            if me: 
-                me.latest_sensor_data['rgb_camera'] = data # CORRECTED
-        camera.listen(callback)
-
-    def _setup_depth_camera(self):
-        blueprint_library = self.world.get_blueprint_library()
-        camera_bp = blueprint_library.find('sensor.camera.depth')
-        camera_bp.set_attribute('image_size_x', str(self.image_width))
-        camera_bp.set_attribute('image_size_y', str(self.image_height))
-        camera_bp.set_attribute('fov', str(self.fov))
-        camera_bp.set_attribute('sensor_tick', str(self.timestep))
-        camera_transform = carla.Transform(carla.Location(x=1.5, z=2.4))
-        camera = self.world.spawn_actor(camera_bp, camera_transform, attach_to=self.vehicle)
-        self.sensor_list.append(camera)
-        self.logger.info(f"Spawned Depth Camera: {camera.id}")
-        weak_self = weakref.ref(self)
-        def callback(data):
-            me = weak_self()
-            if me: 
-                me.latest_sensor_data['depth_camera'] = data
-        camera.listen(callback)
-
-    def _setup_semantic_segmentation_camera(self):
-        blueprint_library = self.world.get_blueprint_library()
-        camera_bp = blueprint_library.find('sensor.camera.semantic_segmentation')
-        camera_bp.set_attribute('image_size_x', str(self.image_width))
-        camera_bp.set_attribute('image_size_y', str(self.image_height))
-        camera_bp.set_attribute('fov', str(self.fov))
-        camera_bp.set_attribute('sensor_tick', str(self.timestep))
-        camera_transform = carla.Transform(carla.Location(x=1.5, z=2.4))
-        camera = self.world.spawn_actor(camera_bp, camera_transform, attach_to=self.vehicle)
-        self.sensor_list.append(camera)
-        self.logger.info(f"Spawned Semantic Segmentation Camera: {camera.id}")
-        weak_self = weakref.ref(self)
-        def callback(data):
-            me = weak_self()
-            if me: 
-                me.latest_sensor_data['semantic_camera'] = data
-        camera.listen(callback)
-
-    def _setup_lidar_sensor(self):
-        blueprint_library = self.world.get_blueprint_library()
-        lidar_bp = blueprint_library.find('sensor.lidar.ray_cast')
-        lidar_bp.set_attribute('channels', str(self.lidar_config['channels']))
-        lidar_bp.set_attribute('range', str(self.lidar_config['range']))
-        lidar_bp.set_attribute('points_per_second', str(self.lidar_config['points_per_second']))
-        lidar_bp.set_attribute('rotation_frequency', str(self.lidar_config['rotation_frequency']))
-        lidar_bp.set_attribute('upper_fov', str(self.lidar_config['upper_fov']))
-        lidar_bp.set_attribute('lower_fov', str(self.lidar_config['lower_fov']))
-        lidar_bp.set_attribute('sensor_tick', str(self.lidar_config['sensor_tick']))
-        lidar_transform = carla.Transform(carla.Location(x=1.5, z=2.4))
-        lidar = self.world.spawn_actor(lidar_bp, lidar_transform, attach_to=self.vehicle)
-        self.sensor_list.append(lidar)
-        self.logger.info(f"Spawned LIDAR Sensor: {lidar.id}")
-        weak_self = weakref.ref(self)
-        def callback(data):
-            me = weak_self()
-            if me: 
-                me.latest_sensor_data['lidar'] = data
-        lidar.listen(callback)
-
-    def _setup_collision_sensor(self):
-        blueprint_library = self.world.get_blueprint_library()
-        collision_bp = blueprint_library.find('sensor.other.collision')
-        collision_bp.set_attribute('ignore_actor', '0')
-        collision_transform = carla.Transform()
-        collision = self.world.spawn_actor(collision_bp, collision_transform, attach_to=self.vehicle)
-        self.sensor_list.append(collision)
-        self.logger.info(f"Spawned Collision Sensor: {collision.id}")
-        weak_self = weakref.ref(self)
-        def callback(event):
-            me = weak_self()
-            if me: 
-                me.latest_sensor_data['collision'] = event
-                me.collision_info['count'] += 1
-                impulse = event.normal_impulse
-                intensity = np.sqrt(impulse.x**2 + impulse.y**2 + impulse.z**2)
-                me.collision_info['last_intensity'] = intensity
-        collision.listen(callback)
-
-    def _setup_gnss_sensor(self):
-        blueprint_library = self.world.get_blueprint_library()
-        gnss_bp = blueprint_library.find('sensor.other.gnss')
-        gnss_bp.set_attribute('sensor_tick', str(self.timestep))
-        gnss_transform = carla.Transform(carla.Location(x=1.5, z=2.4))
-        gnss = self.world.spawn_actor(gnss_bp, gnss_transform, attach_to=self.vehicle)
-        self.sensor_list.append(gnss)
-        self.logger.info(f"Spawned GNSS Sensor: {gnss.id}")
-        weak_self = weakref.ref(self)
-        def callback(data):
-            me = weak_self()
-            if me: 
-                me.latest_sensor_data['gnss'] = data
-        gnss.listen(callback)
-
-    def _setup_imu_sensor(self):
-        blueprint_library = self.world.get_blueprint_library()
-        imu_bp = blueprint_library.find('sensor.other.imu')
-        imu_bp.set_attribute('sensor_tick', str(self.timestep))
-        imu_transform = carla.Transform(carla.Location(x=1.5, z=2.4))
-        imu = self.world.spawn_actor(imu_bp, imu_transform, attach_to=self.vehicle)
-        self.sensor_list.append(imu)
-        self.logger.info(f"Spawned IMU Sensor: {imu.id}")
-        weak_self = weakref.ref(self)
-        def callback(data):
-            me = weak_self()
-            if me: 
-                me.latest_sensor_data['imu'] = data
-        imu.listen(callback)
-
-    def _setup_radar_sensor(self):
-        blueprint_library = self.world.get_blueprint_library()
-        radar_bp = blueprint_library.find('sensor.other.radar')
-        radar_bp.set_attribute('horizontal_fov', str(self.radar_config['horizontal_fov']))
-        radar_bp.set_attribute('vertical_fov', str(self.radar_config['vertical_fov']))
-        radar_bp.set_attribute('points_per_second', str(self.radar_config['points_per_second']))
-        radar_bp.set_attribute('max_detections_processed', str(self.radar_config['max_detections_processed']))
-        radar_bp.set_attribute('sensor_tick', str(self.radar_config['sensor_tick']))
-        radar_transform = carla.Transform(carla.Location(x=1.5, z=2.4))
-        radar = self.world.spawn_actor(radar_bp, radar_transform, attach_to=self.vehicle)
-        self.sensor_list.append(radar)
-        self.logger.info(f"Spawned RADAR Sensor: {radar.id}")
-        weak_self = weakref.ref(self)
-        def callback(data):
-            me = weak_self()
-            if me: 
-                me.latest_sensor_data['radar'] = data
-        radar.listen(callback)
+        # Semantic Segmentation Camera
+        seg_camera_actor = camera_handler.setup_segmentation_camera(
+            self.world, self.vehicle, world_weak_ref,
+            image_width=self.image_width, image_height=self.image_height,
+            fov=self.fov, sensor_tick=str(self.timestep), transform=seg_cam_transform
+        )
+        if seg_camera_actor: self.sensor_list.append(seg_camera_actor)
+        
+        # LIDAR Sensor
+        lidar_actor = lidar_handler.setup_lidar_sensor(
+            self.world, self.vehicle, world_weak_ref, 
+            lidar_config=self.lidar_config, transform=lidar_transform
+        )
+        if lidar_actor: self.sensor_list.append(lidar_actor)
+        
+        # GNSS Sensor
+        gnss_actor = gnss_imu_handler.setup_gnss_sensor(
+            self.world, self.vehicle, world_weak_ref, 
+            sensor_tick=str(self.timestep), transform=gnss_transform
+        )
+        if gnss_actor: self.sensor_list.append(gnss_actor)
+        
+        # IMU Sensor
+        imu_actor = gnss_imu_handler.setup_imu_sensor(
+            self.world, self.vehicle, world_weak_ref, 
+            sensor_tick=str(self.timestep), transform=imu_transform
+        )
+        if imu_actor: self.sensor_list.append(imu_actor)
+        
+        # RADAR Sensor
+        radar_actor = radar_handler.setup_radar_sensor(
+            self.world, self.vehicle, world_weak_ref, 
+            radar_config=self.radar_config, transform=radar_transform
+        )
+        if radar_actor: self.sensor_list.append(radar_actor)
+        
+        # Collision Sensor
+        collision_actor = collision_handler.setup_collision_sensor(
+            self.world, self.vehicle, world_weak_ref, transform=collision_transform
+        )
+        if collision_actor: self.sensor_list.append(collision_actor)
+        
+        # Tick the world once to let sensors register
+        if self.world and self.world.get_settings().synchronous_mode:
+            self.world.tick()
+            # time.sleep(0.1) # Small delay to ensure registration - tick should be enough in sync mode
+        self.logger.info(f"All sensors set up. Total sensors attached: {len(self.sensor_list)}")
 
     def _position_spectator_camera(self):
         """Positions the spectator camera behind and above the vehicle."""
@@ -804,7 +666,7 @@ class CarlaEnv(BaseEnv):
         # Reset sensor data stores
         for key in self.latest_sensor_data:
             self.latest_sensor_data[key] = None
-        self.collision_info = {'count': 0, 'last_intensity': 0.0} # Reset collision info too
+        self.collision_info = {'count': 0, 'last_intensity': 0.0, 'last_other_actor': None} # Reset collision info
 
         # Vehicle should be None already, but as a safeguard:
         if self.vehicle is not None:
