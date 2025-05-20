@@ -126,12 +126,26 @@ def train():
     # q_network_model = DQNModel(state_shape=dummy_obs_shape_for_model, n_actions=dummy_n_actions_for_model)
     
     # Get state shape and number of actions from the environment spaces
-    # CarlaEnv observation_space.shape is (C, H, W)
-    state_shape = env.observation_space.shape 
-    n_actions = env.action_space.n
-    main_logger.info(f"Environment state shape: {state_shape}, Number of actions: {n_actions}") # Changed from print
+    # CarlaEnv observation_space.shape is (C, H, W) <-- This comment is outdated
+    # state_shape = env.observation_space.shape # <-- This would fail for Dict space
+    # n_actions = env.action_space.n
+    # main_logger.info(f"Environment state shape: {state_shape}, Number of actions: {n_actions}")
 
-    q_network_model = DQNModel(state_shape=state_shape, n_actions=n_actions)
+    # q_network_model = DQNModel(state_shape=state_shape, n_actions=n_actions) # <-- Old initialization
+
+    # New initialization for DQNModel that accepts the observation_space dictionary
+    observation_space = env.observation_space # This is a gym.spaces.Dict
+    n_actions = env.action_space.n
+    main_logger.info(f"Environment observation space type: {type(observation_space)}")
+    if isinstance(observation_space, gym.spaces.Dict):
+        main_logger.info(f"Observation space keys: {list(observation_space.spaces.keys())}")
+        # Optionally log shapes of individual spaces within the Dict
+        for key, space in observation_space.spaces.items():
+            main_logger.info(f"  {key}: shape={space.shape}, dtype={space.dtype}")
+    main_logger.info(f"Number of actions: {n_actions}")
+
+    q_network_model = DQNModel(observation_space=observation_space, n_actions=n_actions)
+    main_logger.info("DQNModel initialized successfully with dictionary observation space.")
     
     # 4. Agent
     agent = DQNAgent(observation_space=env.observation_space, 
