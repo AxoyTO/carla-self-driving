@@ -10,12 +10,16 @@ class Logger:
             log_dir (str): The root directory for TensorBoard logs.
             experiment_name (str): Name for the current experiment.
         """
-        current_time = datetime.now().strftime('%Y%m%d-%H%M%S')
-        run_name = f"{experiment_name}_{current_time}"
+        self.timestamp = datetime.now().strftime('%Y%m%d-%H%M%S') # Store timestamp
+        run_name = f"{experiment_name}_{self.timestamp}"
         self.run_dir = os.path.join(log_dir, run_name)
         
         self.writer = SummaryWriter(self.run_dir)
         print(f"TensorBoard logs will be saved to: {self.run_dir}")
+
+    def get_timestamp(self) -> str:
+        """Returns the timestamp string created during initialization."""
+        return self.timestamp
 
     def log_scalar(self, tag, value, step):
         """
