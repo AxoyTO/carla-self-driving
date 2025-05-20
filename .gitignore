@@ -172,3 +172,24 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# CARLA
+CARLA_PROJECT
+Paper
+src-alternative
+
+# Logs and Experiment Artifacts
+# These paths are relative to the .gitignore file (workspace root)
+/runs/
+/logs/
+/src/runs/
+/src/logs/
+/setup/
+
+# Saved Models / Checkpoints
+/checkpoints/
+/saved_models/
+
+# Build artifacts
+/build/
+/dist/
