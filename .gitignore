@@ -189,6 +189,7 @@ src-alternative
 # Saved Models / Checkpoints
 /checkpoints/
 /saved_models/
+/src/model_checkpoints/
 
 # Build artifacts
 /build/
