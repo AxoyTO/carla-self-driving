@@ -190,6 +190,7 @@ src-alternative
 /checkpoints/
 /saved_models/
 /src/model_checkpoints/
+/src/sensor_data/
 
 # Build artifacts
 /build/
