@@ -53,7 +53,7 @@ class HUD:
                     else: raise pygame.error("match_font failed for chosen main font")
                 else: raise pygame.error("No suitable main font found by name")
             actual_font_size_main = base_font_size
-            print(f"  HUD: Successfully loaded main font: '{actual_font_name_main}' with size {actual_font_size_main}")
+            print(f"HUD: Successfully loaded main font: '{actual_font_name_main}' with size {actual_font_size_main}")
             self.line_height = actual_font_size_main + 6
         except pygame.error:
             pygame.font.init() 
@@ -61,7 +61,7 @@ class HUD:
             actual_font_size_main = fallback_font_size
             self.line_height = actual_font_size_main + 4
             actual_font_name_main = "Pygame Default (Fallback)"
-            print(f"  HUD: Fell back to main font: '{actual_font_name_main}' with size {actual_font_size_main}")
+            print(f"HUD: Fell back to main font: '{actual_font_name_main}' with size {actual_font_size_main}")
         
         # --- Notification Font Loading (mirroring main font logic but for smaller size) ---
         self.notification_font = None
@@ -80,7 +80,7 @@ class HUD:
                     self.notification_font = pygame.font.Font(font_to_load, target_notif_font_size)
                     actual_font_name_notif = f"{actual_font_name_main.split(' (')[0]} (source same as main)" # Use original preferred name part
                     actual_loaded_notif_font_size = target_notif_font_size
-                    print(f"  HUD: Successfully loaded notification font (from main font source): '{actual_font_name_notif}' with size {actual_loaded_notif_font_size}")
+                    print(f"HUD: Successfully loaded notification font (from main font source): '{actual_font_name_notif}' with size {actual_loaded_notif_font_size}")
                 except (pygame.error, OSError):
                     self.notification_font = None # Failed, will try full logic below
             
@@ -120,26 +120,27 @@ class HUD:
                         else: raise pygame.error("match_font failed for chosen notification font")
                     else: raise pygame.error("No suitable notification font found by name")
                 actual_loaded_notif_font_size = target_notif_font_size
-                print(f"  HUD: Successfully loaded notification font: '{actual_font_name_notif}' with size {actual_loaded_notif_font_size}")
+                print(f"HUD: Successfully loaded notification font: '{actual_font_name_notif}' with size {actual_loaded_notif_font_size}")
         
         except pygame.error:
             pygame.font.init()
             self.notification_font = pygame.font.Font(None, fallback_notif_font_size)
             actual_loaded_notif_font_size = fallback_notif_font_size
             actual_font_name_notif = "Pygame Default (Fallback)"
-            print(f"  HUD: Fell back to notification font: '{actual_font_name_notif}' with size {actual_loaded_notif_font_size}")
+            print(f"HUD: Fell back to notification font: '{actual_font_name_notif}' with size {actual_loaded_notif_font_size}")
 
         if self.notification_font is None: # Ultimate fallback for notification font
              self.notification_font = self.font # Use main font if all else failed for notification
              actual_font_name_notif = actual_font_name_main # Copy main font details
              actual_loaded_notif_font_size = actual_font_size_main 
-             print("  HUD: Notification font defaulted to main HUD font.")
+             print("HUD: Notification font defaulted to main HUD font.")
         
         # Print final loaded fonts (can be enabled for debugging)
         if actual_font_name_main != "Unknown": print(f"HUD Main Font: '{actual_font_name_main}', Size: {actual_font_size_main}")
         if actual_font_name_notif != "Unknown": print(f"HUD Notification Font: '{actual_font_name_notif}', Size: {actual_loaded_notif_font_size}")
 
         self.section_break_keys = [
+            "Current View",
             "Vehicle Model", 
             "Speed (km/h)",
             "RL Action",
