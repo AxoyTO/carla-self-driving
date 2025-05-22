@@ -3,7 +3,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 import gymnasium as gym # To access space types if needed for introspection
 from collections import OrderedDict
-from typing import Dict # For type hinting
+from typing import Dict, Tuple, Optional # Added Tuple, Optional
+
+# Helper nn.Module for permuting tensor dimensions
+class Permute(nn.Module):
+    def __init__(self, dims):
+        super(Permute, self).__init__()
+        self.dims = dims
+
+    def forward(self, x):
+        return x.permute(*self.dims)
 
 class DQNModel(nn.Module):
     def __init__(self, observation_space: gym.spaces.Dict, n_actions: int):
@@ -20,132 +29,50 @@ class DQNModel(nn.Module):
         self.feature_extractors = nn.ModuleDict()
         current_concat_size = 0
 
-        # --- RGB Camera Feature Extractor (CNN) ---
+        # --- Create Feature Extractors for each modality ---
         if 'rgb_camera' in observation_space.spaces:
-            rgb_shape = observation_space.spaces['rgb_camera'].shape # (C, H, W)
-            c, h, w = rgb_shape
-            self.feature_extractors['rgb_camera'] = nn.Sequential(
-                nn.Conv2d(c, 32, kernel_size=8, stride=4),
-                nn.ReLU(),
-                nn.Conv2d(32, 64, kernel_size=4, stride=2),
-                nn.ReLU(),
-                nn.Conv2d(64, 64, kernel_size=3, stride=1),
-                nn.ReLU(),
-                nn.Flatten()
-            )
-            # Calculate flattened size dynamically
-            with torch.no_grad():
-                dummy_rgb = torch.zeros(1, *rgb_shape)
-                rgb_feature_size = self.feature_extractors['rgb_camera'](dummy_rgb).shape[1]
-            current_concat_size += rgb_feature_size
-            print(f"RGB Camera feature size: {rgb_feature_size}")
+            extractor, size = self._create_rgb_extractor(observation_space.spaces['rgb_camera'].shape, name_prefix="FrontRGB")
+            if extractor: self.feature_extractors['rgb_camera'] = extractor; current_concat_size += size
+        
+        if 'left_rgb_camera' in observation_space.spaces:
+            extractor, size = self._create_rgb_extractor(observation_space.spaces['left_rgb_camera'].shape, name_prefix="LeftRGB")
+            if extractor: self.feature_extractors['left_rgb_camera'] = extractor; current_concat_size += size
 
-        # --- Depth Camera Feature Extractor (Simple CNN or MLP) ---
+        if 'right_rgb_camera' in observation_space.spaces:
+            extractor, size = self._create_rgb_extractor(observation_space.spaces['right_rgb_camera'].shape, name_prefix="RightRGB")
+            if extractor: self.feature_extractors['right_rgb_camera'] = extractor; current_concat_size += size
+
+        if 'rear_rgb_camera' in observation_space.spaces:
+            extractor, size = self._create_rgb_extractor(observation_space.spaces['rear_rgb_camera'].shape, name_prefix="RearRGB")
+            if extractor: self.feature_extractors['rear_rgb_camera'] = extractor; current_concat_size += size
+
         if 'depth_camera' in observation_space.spaces:
-            depth_shape = observation_space.spaces['depth_camera'].shape # (1, H, W)
-            c, h, w = depth_shape
-            # Using a simpler CNN for depth, or could be an MLP after flatten
-            self.feature_extractors['depth_camera'] = nn.Sequential(
-                nn.Conv2d(c, 16, kernel_size=5, stride=2),
-                nn.ReLU(),
-                nn.Conv2d(16, 32, kernel_size=3, stride=2),
-                nn.ReLU(),
-                nn.Flatten(),
-                nn.Linear(self._get_conv_out_size(depth_shape, 
-                                                 kernels=[5,3], strides=[2,2], channels=[c,16,32]), 128),
-                nn.ReLU()
-            )
-            current_concat_size += 128
-            print(f"Depth Camera feature size: 128")
+            extractor, size = self._create_depth_extractor(observation_space.spaces['depth_camera'].shape)
+            if extractor: self.feature_extractors['depth_camera'] = extractor; current_concat_size += size
 
-
-        # --- Semantic Segmentation Camera Feature Extractor ---
         if 'semantic_camera' in observation_space.spaces:
-            semantic_shape = observation_space.spaces['semantic_camera'].shape # (1, H, W)
-            c, h, w = semantic_shape
-            # Similar to depth or even simpler
-            self.feature_extractors['semantic_camera'] = nn.Sequential(
-                nn.Conv2d(c, 16, kernel_size=5, stride=2),
-                nn.ReLU(),
-                nn.Conv2d(16, 32, kernel_size=3, stride=2),
-                nn.ReLU(),
-                nn.Flatten(),
-                nn.Linear(self._get_conv_out_size(semantic_shape,
-                                                 kernels=[5,3], strides=[2,2], channels=[c,16,32]), 128),
-                nn.ReLU()
-            )
-            current_concat_size += 128
-            print(f"Semantic Camera feature size: 128")
+            extractor, size = self._create_semantic_extractor(observation_space.spaces['semantic_camera'].shape)
+            if extractor: self.feature_extractors['semantic_camera'] = extractor; current_concat_size += size
 
-        # --- LIDAR Feature Extractor (1D Conv + MLP or just MLP) ---
         if 'lidar' in observation_space.spaces:
-            lidar_shape = observation_space.spaces['lidar'].shape # (N_points, 3)
-            # Option 1: Flatten and MLP
-            # self.feature_extractors['lidar'] = nn.Sequential(
-            #     nn.Flatten(),
-            #     nn.Linear(lidar_shape[0] * lidar_shape[1], 256),
-            #     nn.ReLU(),
-            #     nn.Linear(256, 128),
-            #     nn.ReLU()
-            # )
-            # current_concat_size += 128
-            # Option 2: 1D Convolutions (treat points as sequence, features as channels)
-            # Input shape for Conv1d: (Batch, Channels, Length) -> (Batch, 3, N_points)
-            self.feature_extractors['lidar'] = nn.Sequential(
-                Permute((0, 2, 1)), # (B, N_points, 3) -> (B, 3, N_points)
-                nn.Conv1d(in_channels=3, out_channels=32, kernel_size=5, stride=2),
-                nn.ReLU(),
-                nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3, stride=2),
-                nn.ReLU(),
-                nn.Flatten(),
-                # Need to calculate output size of Conv1d sequence
-                # For now, let's use a placeholder and then an MLP.
-                # Or calculate it dynamically, assuming fixed lidar_shape[0]
-                # fc_lidar_in = self._get_1d_conv_out_size(lidar_shape[0], kernels=[5,3], strides=[2,2]) * 64
-                # nn.Linear(fc_lidar_in, 128), # This calculation is tricky without knowing lidar_shape[0] at init
-                nn.LazyLinear(128), # Use LazyLinear to infer input size
-                nn.ReLU()
-            )
-            current_concat_size += 128
-            print(f"LIDAR feature size: 128 (using 1D Conv + LazyLinear)")
+            extractor, size = self._create_lidar_extractor(observation_space.spaces['lidar'].shape)
+            if extractor: self.feature_extractors['lidar'] = extractor; current_concat_size += size
 
-
-        # --- GNSS Feature Extractor (Simple MLP) ---
         if 'gnss' in observation_space.spaces:
-            gnss_shape = observation_space.spaces['gnss'].shape[0] # (3,)
-            self.feature_extractors['gnss'] = nn.Sequential(
-                nn.Linear(gnss_shape, 64),
-                nn.ReLU(),
-                nn.Linear(64, 32),
-                nn.ReLU()
-            )
-            current_concat_size += 32
-            print(f"GNSS feature size: 32")
+            extractor, size = self._create_gnss_extractor(observation_space.spaces['gnss'].shape[0])
+            if extractor: self.feature_extractors['gnss'] = extractor; current_concat_size += size
 
-        # --- IMU Feature Extractor (Simple MLP) ---
         if 'imu' in observation_space.spaces:
-            imu_shape = observation_space.spaces['imu'].shape[0] # (6,)
-            self.feature_extractors['imu'] = nn.Sequential(
-                nn.Linear(imu_shape, 64),
-                nn.ReLU(),
-                nn.Linear(64, 32),
-                nn.ReLU()
-            )
-            current_concat_size += 32
-            print(f"IMU feature size: 32")
+            extractor, size = self._create_imu_extractor(observation_space.spaces['imu'].shape[0])
+            if extractor: self.feature_extractors['imu'] = extractor; current_concat_size += size
 
-        # --- RADAR Feature Extractor (Simple MLP after flatten) ---
         if 'radar' in observation_space.spaces:
-            radar_shape = observation_space.spaces['radar'].shape # (M_detections, 4)
-            self.feature_extractors['radar'] = nn.Sequential(
-                nn.Flatten(),
-                nn.Linear(radar_shape[0] * radar_shape[1], 128),
-                nn.ReLU(),
-                nn.Linear(128, 64),
-                nn.ReLU()
-            )
-            current_concat_size += 64
-            print(f"Radar feature size: 64")
+            extractor, size = self._create_radar_extractor(observation_space.spaces['radar'].shape)
+            if extractor: self.feature_extractors['radar'] = extractor; current_concat_size += size
+
+        if 'semantic_lidar' in observation_space.spaces:
+            extractor, size = self._create_semantic_lidar_extractor(observation_space.spaces['semantic_lidar'].shape)
+            if extractor: self.feature_extractors['semantic_lidar'] = extractor; current_concat_size += size
 
         if current_concat_size == 0:
             raise ValueError("No feature extractors were created. Observation space might be empty or not recognized.")
@@ -173,6 +100,129 @@ class DQNModel(nn.Module):
             length = (length + 2 * padding - (kernels[i] - 1) - 1) // strides[i] + 1
         return length
 
+    def _create_rgb_extractor(self, rgb_shape: Tuple[int, int, int], name_prefix: str = "RGB") -> Tuple[Optional[nn.Module], int]:
+        c, h, w = rgb_shape
+        extractor = nn.Sequential(
+            nn.Conv2d(c, 32, kernel_size=8, stride=4),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU(),
+            nn.Flatten()
+        )
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, *rgb_shape)
+            feature_size = extractor(dummy_input).shape[1]
+        print(f"DQNModel: {name_prefix} Camera feature extractor created, output size: {feature_size}")
+        return extractor, feature_size
+
+    def _create_depth_extractor(self, depth_shape: Tuple[int, int, int]) -> Tuple[Optional[nn.Module], int]:
+        c, h, w = depth_shape
+        conv_out_features = self._get_conv_out_size(depth_shape, kernels=[5,3], strides=[2,2], channels=[c,16,32])
+        output_feature_size = 128
+        extractor = nn.Sequential(
+            nn.Conv2d(c, 16, kernel_size=5, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(conv_out_features, output_feature_size),
+            nn.ReLU()
+        )
+        print(f"DQNModel: Depth Camera feature extractor created, output size: {output_feature_size}")
+        return extractor, output_feature_size
+
+    def _create_semantic_extractor(self, semantic_shape: Tuple[int, int, int]) -> Tuple[Optional[nn.Module], int]:
+        c, h, w = semantic_shape
+        conv_out_features = self._get_conv_out_size(semantic_shape, kernels=[5,3], strides=[2,2], channels=[c,16,32])
+        output_feature_size = 128
+        extractor = nn.Sequential(
+            nn.Conv2d(c, 16, kernel_size=5, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(conv_out_features, output_feature_size),
+            nn.ReLU()
+        )
+        print(f"DQNModel: Semantic Camera feature extractor created, output size: {output_feature_size}")
+        return extractor, output_feature_size
+
+    def _create_lidar_extractor(self, lidar_shape: Tuple[int, int]) -> Tuple[Optional[nn.Module], int]:
+        # lidar_shape is (N_points, 3) or similar
+        output_feature_size = 128
+        extractor = nn.Sequential(
+            Permute((0, 2, 1)), # (B, N_points, Channels) -> (B, Channels, N_points)
+            nn.Conv1d(in_channels=lidar_shape[1], out_channels=32, kernel_size=5, stride=2), # Assuming lidar_shape[1] is num_features_per_point
+            nn.ReLU(),
+            nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3, stride=2),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.LazyLinear(output_feature_size),
+            nn.ReLU()
+        )
+        print(f"DQNModel: LiDAR feature extractor created, output size: {output_feature_size} (using 1D Conv + LazyLinear)")
+        return extractor, output_feature_size
+
+    def _create_gnss_extractor(self, gnss_shape_flat: int) -> Tuple[Optional[nn.Module], int]:
+        output_feature_size = 32
+        extractor = nn.Sequential(
+            nn.Linear(gnss_shape_flat, 64),
+            nn.ReLU(),
+            nn.Linear(64, output_feature_size),
+            nn.ReLU()
+        )
+        print(f"DQNModel: GNSS feature extractor created, output size: {output_feature_size}")
+        return extractor, output_feature_size
+
+    def _create_imu_extractor(self, imu_shape_flat: int) -> Tuple[Optional[nn.Module], int]:
+        output_feature_size = 32
+        extractor = nn.Sequential(
+            nn.Linear(imu_shape_flat, 64),
+            nn.ReLU(),
+            nn.Linear(64, output_feature_size),
+            nn.ReLU()
+        )
+        print(f"DQNModel: IMU feature extractor created, output size: {output_feature_size}")
+        return extractor, output_feature_size
+
+    def _create_radar_extractor(self, radar_shape: Tuple[int, int]) -> Tuple[Optional[nn.Module], int]:
+        # radar_shape is (M_detections, 4)
+        output_feature_size = 64
+        extractor = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(radar_shape[0] * radar_shape[1], 128),
+            nn.ReLU(),
+            nn.Linear(128, output_feature_size),
+            nn.ReLU()
+        )
+        print(f"DQNModel: RADAR feature extractor created, output size: {output_feature_size}")
+        return extractor, output_feature_size
+
+    def _create_semantic_lidar_extractor(self, sem_lidar_shape: Tuple[int, int]) -> Tuple[Optional[nn.Module], int]:
+        # sem_lidar_shape is (N_points, 4) where 4 = (x,y,z,object_tag)
+        # We can use a similar 1D Conv architecture as for standard LIDAR,
+        # but now with 4 input channels per point if object_tag is treated as a channel.
+        # Or, embed object_tag and concatenate with (x,y,z) features.
+        # For simplicity, let's treat all 4 as input channels to Conv1D.
+        output_feature_size = 128 
+        # Input to Conv1d: (Batch, Channels, Length) -> (Batch, 4, N_points)
+        num_input_features_per_point = sem_lidar_shape[1] # Should be 4
+
+        extractor = nn.Sequential(
+            Permute((0, 2, 1)), # (B, N_points, Channels) -> (B, Channels, N_points)
+            nn.Conv1d(in_channels=num_input_features_per_point, out_channels=32, kernel_size=5, stride=2),
+            nn.ReLU(),
+            nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3, stride=2),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.LazyLinear(output_feature_size),
+            nn.ReLU()
+        )
+        print(f"DQNModel: Semantic LIDAR feature extractor created, input_channels={num_input_features_per_point}, output_size: {output_feature_size}")
+        return extractor, output_feature_size
+
     def forward(self, obs_dict: Dict[str, torch.Tensor]):
         """
         Forward pass through the network.
@@ -187,6 +237,12 @@ class DQNModel(nn.Module):
             # Normalize RGB image (assuming 0-255 range)
             rgb_tensor = obs_dict['rgb_camera'].float() / 255.0
             extracted_features.append(self.feature_extractors['rgb_camera'](rgb_tensor))
+
+        # Process new cameras (Left, Right, Rear)
+        for cam_key in ['left_rgb_camera', 'right_rgb_camera', 'rear_rgb_camera']:
+            if cam_key in self.feature_extractors:
+                cam_tensor = obs_dict[cam_key].float() / 255.0 # Normalize
+                extracted_features.append(self.feature_extractors[cam_key](cam_tensor))
 
         if 'depth_camera' in self.feature_extractors:
             # Depth data is already normalized to [0,1] by the handler
@@ -215,6 +271,10 @@ class DQNModel(nn.Module):
             radar_tensor = obs_dict['radar'].float()
             extracted_features.append(self.feature_extractors['radar'](radar_tensor))
         
+        if 'semantic_lidar' in self.feature_extractors:
+            sem_lidar_tensor = obs_dict['semantic_lidar'].float() # Tags are already float from handler
+            extracted_features.append(self.feature_extractors['semantic_lidar'](sem_lidar_tensor))
+
         # Concatenate all features
         # print([f.shape for f in extracted_features]) # Debug shapes
         concatenated_features = torch.cat(extracted_features, dim=1)
@@ -228,15 +288,6 @@ class DQNModel(nn.Module):
         Used by DQNAgent to create the target network.
         """
         return self.observation_space, self.n_actions
-
-# Helper nn.Module for permuting tensor dimensions
-class Permute(nn.Module):
-    def __init__(self, dims):
-        super(Permute, self).__init__()
-        self.dims = dims
-
-    def forward(self, x):
-        return x.permute(*self.dims)
 
 # Example Usage (for testing the model dimensions)
 # if __name__ == '__main__':

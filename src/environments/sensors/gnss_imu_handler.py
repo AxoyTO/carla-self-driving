@@ -28,7 +28,7 @@ def setup_gnss_sensor(world, vehicle, carla_env_weak_ref, sensor_tick=DEFAULT_SE
         transform = carla.Transform(carla.Location(x=0.0, z=2.0))  # Default on the roof
 
     gnss = world.spawn_actor(gnss_bp, transform, attach_to=vehicle)
-    logger.info(f"Spawned GNSS Sensor: {gnss.id} at {transform}")
+    logger.debug(f"Spawned GNSS Sensor: {gnss.id} at {transform}")
 
     def callback(data):  # carla.GnssMeasurement
         me = carla_env_weak_ref()
@@ -62,7 +62,7 @@ def setup_imu_sensor(world, vehicle, carla_env_weak_ref, sensor_tick=DEFAULT_SEN
         transform = carla.Transform(carla.Location(x=0.0, z=1.5))  # Approx center of mass
 
     imu = world.spawn_actor(imu_bp, transform, attach_to=vehicle)
-    logger.info(f"Spawned IMU Sensor: {imu.id} at {transform}")
+    logger.debug(f"Spawned IMU Sensor: {imu.id} at {transform}")
 
     def callback(data):  # carla.IMUMeasurement
         me = carla_env_weak_ref()

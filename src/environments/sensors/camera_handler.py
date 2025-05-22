@@ -52,7 +52,8 @@ def _setup_camera_blueprint(blueprint_library, sensor_type, image_width, image_h
 
 def setup_rgb_camera(world, vehicle, carla_env_weak_ref,
                      image_width=DEFAULT_CAMERA_IMAGE_WIDTH, image_height=DEFAULT_CAMERA_IMAGE_HEIGHT,
-                     fov=DEFAULT_CAMERA_FOV, sensor_tick=0.05, transform=None):
+                     fov=DEFAULT_CAMERA_FOV, sensor_tick=0.05, transform=None,
+                     sensor_key: str = 'rgb_camera'):
     """Spawns and configures an RGB camera."""
     camera_bp = _setup_camera_blueprint(world.get_blueprint_library(), 'sensor.camera.rgb',
                                      image_width, image_height, fov, sensor_tick)
@@ -61,18 +62,19 @@ def setup_rgb_camera(world, vehicle, carla_env_weak_ref,
         transform = carla.Transform(carla.Location(x=1.5, z=2.4))
     
     camera = world.spawn_actor(camera_bp, transform, attach_to=vehicle)
-    logger.info(f"Spawned RGB Camera: {camera.id} at {transform}")
+    logger.debug(f"Spawned RGB Camera ({sensor_key}): {camera.id} at {transform}")
 
     def callback(data):
         me = carla_env_weak_ref()
         if me:
-            me.latest_sensor_data['rgb_camera'] = data
+            me.latest_sensor_data[sensor_key] = data
     camera.listen(callback)
     return camera
 
 def setup_depth_camera(world, vehicle, carla_env_weak_ref,
                        image_width=DEFAULT_CAMERA_IMAGE_WIDTH, image_height=DEFAULT_CAMERA_IMAGE_HEIGHT,
-                       fov=DEFAULT_CAMERA_FOV, sensor_tick=0.05, transform=None):
+                       fov=DEFAULT_CAMERA_FOV, sensor_tick=0.05, transform=None,
+                       sensor_key: str = 'depth_camera'):
     """Spawns and configures a Depth camera."""
     camera_bp = _setup_camera_blueprint(world.get_blueprint_library(), 'sensor.camera.depth',
                                      image_width, image_height, fov, sensor_tick)
@@ -80,18 +82,19 @@ def setup_depth_camera(world, vehicle, carla_env_weak_ref,
         transform = carla.Transform(carla.Location(x=1.5, y=0.1, z=2.4)) # Slight offset from RGB for clarity
     
     camera = world.spawn_actor(camera_bp, transform, attach_to=vehicle)
-    logger.info(f"Spawned Depth Camera: {camera.id} at {transform}")
+    logger.debug(f"Spawned Depth Camera ({sensor_key}): {camera.id} at {transform}")
 
     def callback(data):
         me = carla_env_weak_ref()
         if me:
-            me.latest_sensor_data['depth_camera'] = data
+            me.latest_sensor_data[sensor_key] = data
     camera.listen(callback)
     return camera
 
 def setup_semantic_segmentation_camera(world, vehicle, carla_env_weak_ref,
                                        image_width=DEFAULT_CAMERA_IMAGE_WIDTH, image_height=DEFAULT_CAMERA_IMAGE_HEIGHT,
-                                       fov=DEFAULT_CAMERA_FOV, sensor_tick=0.05, transform=None):
+                                       fov=DEFAULT_CAMERA_FOV, sensor_tick=0.05, transform=None,
+                                       sensor_key: str = 'semantic_camera'):
     """Spawns and configures a Semantic Segmentation camera."""
     camera_bp = _setup_camera_blueprint(world.get_blueprint_library(), 'sensor.camera.semantic_segmentation',
                                      image_width, image_height, fov, sensor_tick)
@@ -99,12 +102,12 @@ def setup_semantic_segmentation_camera(world, vehicle, carla_env_weak_ref,
         transform = carla.Transform(carla.Location(x=1.5, y=-0.1, z=2.4)) # Slight offset
         
     camera = world.spawn_actor(camera_bp, transform, attach_to=vehicle)
-    logger.info(f"Spawned Semantic Segmentation Camera: {camera.id} at {transform}")
+    logger.debug(f"Spawned Semantic Segmentation Camera ({sensor_key}): {camera.id} at {transform}")
 
     def callback(data):
         me = carla_env_weak_ref()
         if me:
-            me.latest_sensor_data['semantic_camera'] = data
+            me.latest_sensor_data[sensor_key] = data
     camera.listen(callback)
     return camera
 

@@ -22,7 +22,7 @@ def setup_collision_sensor(world, vehicle, carla_env_weak_ref, transform=None):
         transform = carla.Transform(carla.Location(x=0.0, z=0.0)) # Default at vehicle origin
 
     collision_sensor = world.spawn_actor(collision_bp, transform, attach_to=vehicle)
-    logger.info(f"Spawned Collision Sensor: {collision_sensor.id} at {transform}")
+    logger.debug(f"Spawned Collision Sensor: {collision_sensor.id} at {transform}")
 
     def on_collision_event(event): # Renamed from callback for clarity
         env_instance = carla_env_weak_ref()

@@ -16,60 +16,26 @@ class HUD:
         self.base_font_size = base_font_size
         actual_font_name_main = "Unknown"
         actual_font_size_main = 0
+        font_to_load = None
 
         print("HUD: Attempting to load main font...")
         try:
-            font_name_os_specific = 'courier' if os.name == 'nt' else 'mono'
-            preferred_fonts_available = [x for x in pygame.font.get_fonts() if x is not None]
-            font_to_load = None # Stores the name/path of the successfully loaded main font source
-            for pref_name in font_preferences:
-                if pref_name is None: continue
-                try:
-                    matched_font = pygame.font.match_font(pref_name)
-                    if matched_font:
-                        self.font = pygame.font.Font(matched_font, base_font_size)
-                        actual_font_name_main = f"{pref_name} (matched as {os.path.basename(matched_font) if matched_font else 'N/A'})"
-                        font_to_load = matched_font; break
-                    elif os.path.exists(pref_name):
-                         self.font = pygame.font.Font(pref_name, base_font_size)
-                         actual_font_name_main = f"{os.path.basename(pref_name)} (direct path)"
-                         font_to_load = pref_name; break
-                except (pygame.error, OSError): continue
-            if not self.font:
-                system_fonts_lower = [f.lower() for f in preferred_fonts_available if f]
-                chosen_font_name = None
-                if 'ubuntumono' in system_fonts_lower: chosen_font_name = 'ubuntumono' 
-                elif 'ubuntu mono' in system_fonts_lower: chosen_font_name = 'ubuntu mono'
-                else:
-                    fonts_with_os_specific_name = [f for f in preferred_fonts_available if font_name_os_specific in f.lower()]
-                    if fonts_with_os_specific_name: chosen_font_name = fonts_with_os_specific_name[0]
-                    elif preferred_fonts_available: chosen_font_name = preferred_fonts_available[0]
-                if chosen_font_name:
-                    matched_font_path = pygame.font.match_font(chosen_font_name)
-                    if matched_font_path:
-                        self.font = pygame.font.Font(matched_font_path, base_font_size)
-                        actual_font_name_main = f"{chosen_font_name} (matched as {os.path.basename(matched_font_path)})"
-                        font_to_load = matched_font_path # Store the path used
-                    else: raise pygame.error("match_font failed for chosen main font")
-                else: raise pygame.error("No suitable main font found by name")
+            self.font = pygame.font.Font(pygame.font.match_font(font_preferences[0]), base_font_size)
+            actual_font_name_main = font_preferences[0]
             actual_font_size_main = base_font_size
-            print(f"HUD: Successfully loaded main font: '{actual_font_name_main}' with size {actual_font_size_main}")
-            self.line_height = actual_font_size_main + 6
-        except pygame.error:
-            pygame.font.init() 
+        except:
             self.font = pygame.font.Font(None, fallback_font_size)
+            actual_font_name_main = "DefaultPygame"
             actual_font_size_main = fallback_font_size
-            self.line_height = actual_font_size_main + 4
-            actual_font_name_main = "Pygame Default (Fallback)"
-            print(f"HUD: Fell back to main font: '{actual_font_name_main}' with size {actual_font_size_main}")
+        self.line_height = actual_font_size_main + 6
+        print(f"HUD: Successfully loaded main font: '{actual_font_name_main}' with size {actual_font_size_main}")
         
-        # --- Notification Font Loading (mirroring main font logic but for smaller size) ---
-        self.notification_font = None
+        self.notification_font = self.font # Default notification to main font for simplicity
         actual_font_name_notif = "Unknown"
-        target_notif_font_size = int(base_font_size * 0.9) 
-        fallback_notif_font_size = int(fallback_font_size * 0.9)
-        if target_notif_font_size < 8: target_notif_font_size = 8 # Ensure minimum practical size
-        if fallback_notif_font_size < 8: fallback_notif_font_size = 8
+        target_notif_font_size = int(base_font_size * 1.2) 
+        fallback_notif_font_size = int(fallback_font_size * 1.2)
+        if target_notif_font_size < 16: target_notif_font_size = 16 # Ensure minimum practical size
+        if fallback_notif_font_size < 16: fallback_notif_font_size = 16
         actual_loaded_notif_font_size = 0
 
         print("HUD: Attempting to load notification font...")
@@ -139,14 +105,21 @@ class HUD:
         if actual_font_name_main != "Unknown": print(f"HUD Main Font: '{actual_font_name_main}', Size: {actual_font_size_main}")
         if actual_font_name_notif != "Unknown": print(f"HUD Notification Font: '{actual_font_name_notif}', Size: {actual_loaded_notif_font_size}")
 
-        self.section_break_keys = [
-            "Current View",
-            "Vehicle Model", 
-            "Speed (km/h)",
-            "RL Action",
-            "Dist to Goal (m)",
-            "--- Sensors ---"  # Add the new key for sensor section break
+        # Define the HUD layout structure:
+        # Each item is a list of keys for that block.
+        # "Current View" and "Client FPS" are handled specially before these blocks.
+        self.hud_layout = [
+            ["Server FPS"], # Block 1 (after Current View & Client FPS)
+            ["Vehicle Model", "Map", "Simulation Time", "Speed (km/h)", 
+             "Location (X,Y,Z)", "Compass", "Throttle", "Steer", "Brake", "Gear"], #, "Acceleration", "Gyroscope"],
+            ["Episode | Step", "Step Reward", "Episode Score", "Dist to Goal (m)", "Action"],
+            ["Traffic Light", "Collision", "Proximity Penalty", "Term Reason"]
         ]
+        # Key for Current View, handled separately at the top
+        self.current_view_key_hud = "Current View"
+        # Key for Client FPS, handled separately after Current View
+        self.client_fps_key_hud = "Client FPS"
+
         self.text_color = (255, 255, 255)  
         self.notification_default_color = (255, 255, 0) 
         self.background_color = (0, 0, 0) 
@@ -190,85 +163,142 @@ class HUD:
             return
 
         current_display_size = surface.get_size()
-        y_offset_initial = 10; x_offset_initial = 10
-        key_value_gap = 10; box_text_gap = 5
+        y_offset = 10; x_offset = 10
+        key_value_gap = 15 
+        box_text_gap = 5
+        block_spacer_height = self.line_height // 2
 
-        all_keys_for_sizing = ["Client FPS"] + list(debug_info.keys())
-        max_key_len_px = 0
-        for key_text in all_keys_for_sizing:
-            key_surface = self.font.render(f"{key_text}:", True, self.text_color)
-            if key_surface.get_width() > max_key_len_px:
-                max_key_len_px = key_surface.get_width()
+        # --- Calculate dynamic widths for alignment --- 
+        # Keys that will be rendered with a label
+        keys_for_labels = [self.current_view_key_hud, self.client_fps_key_hud]
+        for block in self.hud_layout:
+            for key in block:
+                if key in debug_info and not key.startswith('_'): # Only consider keys actually in debug_info
+                    keys_for_labels.append(key)
         
-        widest_value_component_px = 0
-        temp_combined_info = {"Client FPS": f"{clock.get_fps():.2f}", **debug_info}
-        for key, value in temp_combined_info.items():
-            current_value_width = 0
-            if key == "Traffic Light" and isinstance(value, carla.TrafficLightState):
-                val_str_tl_debug = str(value).split('.')[-1]
-                current_value_width = self.boolean_box_size + box_text_gap + self.font.size(val_str_tl_debug)[0]
-            elif key in ["Collision", "Proximity Penalty"] and isinstance(value, bool):
-                current_value_width = self.boolean_box_size 
-            else: 
-                val_str_std_debug = str(value)
-                current_value_width = self.font.size(val_str_std_debug)[0]
-            if current_value_width > widest_value_component_px:
-                widest_value_component_px = current_value_width
-        content_width = max_key_len_px + key_value_gap + widest_value_component_px 
-        bg_width = content_width + 20
-        num_main_hud_lines = 1 
-        processed_lines_for_sizing = 0
-        for key_iter in debug_info.keys():
-            if key_iter in self.section_break_keys and processed_lines_for_sizing > 0:
-                num_main_hud_lines +=1 
-            num_main_hud_lines +=1
-            processed_lines_for_sizing +=1
-        num_spacers = sum(1 for key_iter in debug_info if key_iter in self.section_break_keys and key_iter != list(debug_info.keys())[0] if processed_lines_for_sizing > 0) 
-        bg_height = (num_main_hud_lines - num_spacers) * self.line_height + num_spacers * (self.line_height // 2) + 10
+        max_key_width = 0
+        if self.font:
+            for key_text in keys_for_labels:
+                key_surf = self.font.render(f"{key_text}:", True, self.text_color)
+                max_key_width = max(max_key_width, key_surf.get_width())
+        
+        # Calculate actual widest value component based on current debug_info
+        widest_value_actual_px = 0
+        if self.font:
+            # Check Current View value width
+            cv_val_str = str(debug_info.get(self.current_view_key_hud, "N/A"))
+            cv_val_surf = self.font.render(cv_val_str, True, self.text_color)
+            widest_value_actual_px = max(widest_value_actual_px, cv_val_surf.get_width())
+            # Check Client FPS value width
+            fps_val_str = f"{clock.get_fps():.1f}"
+            fps_val_surf = self.font.render(fps_val_str, True, self.text_color)
+            widest_value_actual_px = max(widest_value_actual_px, fps_val_surf.get_width())
+
+            # Check values for all other keys in the layout
+            for block_keys in self.hud_layout:
+                for key_text in block_keys:
+                    if key_text in debug_info and not key_text.startswith('_'):
+                        value = debug_info[key_text]
+                        current_val_width = 0
+                        if key_text == "Traffic Light" and isinstance(value, carla.TrafficLightState):
+                            val_str_display = str(value).split('.')[-1]
+                            base_width = self.font.size(val_str_display)[0] if val_str_display else 0
+                            current_val_width = self.boolean_box_size + box_text_gap + base_width
+                        elif key_text in ["Collision", "Proximity Penalty"] and isinstance(value, str) and value in ["True", "False"]:
+                            current_val_width = self.boolean_box_size 
+                        else:
+                            val_str_display = str(value)
+                            current_val_width = self.font.size(val_str_display)[0]
+                        widest_value_actual_px = max(widest_value_actual_px, current_val_width)
+
+        content_width = max_key_width + key_value_gap + widest_value_actual_px
+        bg_width = content_width + 20 # +20 for L/R padding
+
+        # --- Determine background height --- 
+        num_display_lines = 0
+        # Current View
+        num_display_lines += 1 
+        # Spacer after Current View
+        num_display_lines += 0.5 
+        # Client FPS
+        num_display_lines += 1 
+
+        for block_idx, block_keys in enumerate(self.hud_layout):
+            # Spacer before each block defined in hud_layout (including the first one after FPS)
+            num_display_lines += 0.5 
+            actual_keys_in_block = 0
+            for key in block_keys:
+                if key in debug_info and not key.startswith('_'):
+                    actual_keys_in_block += 1
+            if actual_keys_in_block == 0 and block_idx == 0 and self.hud_layout[0] == ["Server FPS", "Episode | Step"] : # Special case for first block if empty
+                pass # Don't add spacer if first block is empty
+            elif actual_keys_in_block == 0: # if a whole block is empty (no keys from it in debug_info), don't add its spacer nor lines
+                num_display_lines -= 0.5 # Remove the pre-added spacer for this empty block
+                continue
+            num_display_lines += actual_keys_in_block
+        
+        bg_height = int(num_display_lines * self.line_height + 10) # +10 for top/bottom padding
 
         if bg_width > 0 and bg_height > 0 and self.font:
             try:
                 bg_surface = pygame.Surface((bg_width, bg_height), pygame.SRCALPHA)
                 bg_surface.fill((*self.background_color, self.background_alpha))
-                surface.blit(bg_surface, (x_offset_initial - 5, y_offset_initial - 5))
+                surface.blit(bg_surface, (x_offset - 5, y_offset - 5))
             except pygame.error as e: print(f"HUD Error: background surface: {e}")
 
-        y_offset = y_offset_initial
-        key_s = self.font.render("Client FPS:", True, self.text_color)
-        val_s = self.font.render(f"{clock.get_fps():.2f}", True, self.text_color)
-        surface.blit(key_s, (x_offset_initial, y_offset))
-        surface.blit(val_s, (x_offset_initial + max_key_len_px + key_value_gap, y_offset))
-        y_offset += self.line_height
-        first_item_after_fps = True
-        for key, value in debug_info.items():
-            if key in self.section_break_keys and not first_item_after_fps:
-                y_offset += self.line_height // 2  
-            key_render_surface = self.font.render(f"{key}:", True, self.text_color)
-            surface.blit(key_render_surface, (x_offset_initial, y_offset))
-            current_x_for_value = x_offset_initial + max_key_len_px + key_value_gap
-            if key == "Traffic Light":
-                if isinstance(value, carla.TrafficLightState):
-                    color = self.traffic_light_colors.get(value, self.traffic_light_colors[carla.TrafficLightState.Unknown])
-                    pygame.draw.rect(surface, color, (current_x_for_value, y_offset + (self.line_height - self.boolean_box_size)//2, self.boolean_box_size, self.boolean_box_size))
-                    val_str = str(value).split('.')[-1] 
-                    if val_str:
-                        val_render_surface = self.font.render(val_str, True, self.text_color)
-                        surface.blit(val_render_surface, (current_x_for_value + self.boolean_box_size + box_text_gap, y_offset))
-                else: 
-                    val_str = str(value)
-                    val_render_surface = self.font.render(val_str, True, self.text_color)
-                    surface.blit(val_render_surface, (current_x_for_value, y_offset))
-            elif key in ["Collision", "Proximity Penalty"] and isinstance(value, bool):
-                box_color = self.boolean_box_true_color if value else self.boolean_box_false_color
-                pygame.draw.rect(surface, box_color, (current_x_for_value, y_offset + (self.line_height - self.boolean_box_size)//2, self.boolean_box_size, self.boolean_box_size))
-            else:
-                val_str = str(value) 
-                val_render_surface = self.font.render(val_str, True, self.text_color)
-                surface.blit(val_render_surface, (current_x_for_value, y_offset))
-            y_offset += self.line_height
-            first_item_after_fps = False
-            if y_offset > current_display_size[1] - self.line_height * (len(self.notifications) + 3): break 
+        # --- Render items based on defined layout --- 
         
+        # 1. Current View
+        key_text = self.current_view_key_hud
+        value_str = str(debug_info.get(key_text, "N/A"))
+        key_surf = self.font.render(f"{key_text}:", True, self.text_color)
+        val_surf = self.font.render(value_str, True, self.text_color)
+        surface.blit(key_surf, (x_offset, y_offset))
+        surface.blit(val_surf, (x_offset + max_key_width + key_value_gap, y_offset))
+        y_offset += self.line_height + block_spacer_height
+
+        # 2. Client FPS
+        key_text = self.client_fps_key_hud
+        value_str = f"{clock.get_fps():.1f}"
+        key_surf = self.font.render(f"{key_text}:", True, self.text_color)
+        val_surf = self.font.render(value_str, True, self.text_color)
+        surface.blit(key_surf, (x_offset, y_offset))
+        surface.blit(val_surf, (x_offset + max_key_width + key_value_gap, y_offset))
+        y_offset += self.line_height
+
+        # 3. Iterate through defined blocks and their keys
+        for block_idx, block_keys in enumerate(self.hud_layout):
+            if block_idx > 0 or self.client_fps_key_hud in self.hud_layout[0]: # Add spacer if not the very first block after CurrentView/FPS special handling
+                 y_offset += block_spacer_height
+            
+            for key_text in block_keys:
+                if key_text.startswith('_'): continue # Should not be in hud_layout, but safeguard
+                if key_text not in debug_info: continue # Skip if data not provided
+
+                value = debug_info[key_text]
+                key_surf = self.font.render(f"{key_text}:", True, self.text_color)
+                surface.blit(key_surf, (x_offset, y_offset))
+                current_val_x_start = x_offset + max_key_width + key_value_gap
+
+                if key_text == "Traffic Light" and isinstance(value, carla.TrafficLightState):
+                    color = self.traffic_light_colors.get(value, self.traffic_light_colors[carla.TrafficLightState.Unknown])
+                    pygame.draw.rect(surface, color, (current_val_x_start, y_offset + (self.line_height - self.boolean_box_size)//2, self.boolean_box_size, self.boolean_box_size))
+                    val_str_display = str(value).split('.')[-1] 
+                    if val_str_display:
+                        val_surf = self.font.render(val_str_display, True, self.text_color)
+                        surface.blit(val_surf, (current_val_x_start + self.boolean_box_size + box_text_gap, y_offset))
+                elif key_text in ["Collision", "Proximity Penalty"] and isinstance(value, str) and value in ["True", "False"]:
+                    bool_val = True if value == "True" else False
+                    box_color = self.boolean_box_true_color if bool_val else self.boolean_box_false_color
+                    pygame.draw.rect(surface, box_color, (current_val_x_start, y_offset + (self.line_height - self.boolean_box_size)//2, self.boolean_box_size, self.boolean_box_size))
+                else:
+                    val_str_display = str(value)
+                    val_surf = self.font.render(val_str_display, True, self.text_color)
+                    surface.blit(val_surf, (current_val_x_start, y_offset))
+                y_offset += self.line_height
+                if y_offset > current_display_size[1] - self.line_height * 3 : break # Early exit if going off screen
+            if y_offset > current_display_size[1] - self.line_height * 3 : break
+
         # --- Render Notifications --- 
         current_time = pygame.time.get_ticks()
         active_notifications = []
@@ -289,7 +319,7 @@ class HUD:
             notification_y_offset -= notif_surface.get_height() + 2 
             # Check against main HUD y_offset AND potential right panel width
             if notification_y_offset < y_offset + 10 : break 
-            surface.blit(notif_surface, (x_offset_initial, notification_y_offset))
+            surface.blit(notif_surface, (x_offset, notification_y_offset))
             if i >= 4 : break
 
     def render_sensor_panel(self, surface: pygame.Surface, sensor_info: dict):

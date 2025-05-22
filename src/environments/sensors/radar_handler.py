@@ -48,7 +48,7 @@ def setup_radar_sensor(world, vehicle, carla_env_weak_ref, radar_config=None, tr
         transform = carla.Transform(carla.Location(x=2.0, z=1.0))  # Default front bumper
 
     radar = world.spawn_actor(radar_bp, transform, attach_to=vehicle)
-    logger.info(f"Spawned RADAR Sensor: {radar.id} at {transform} with range {radar_range}m")
+    logger.debug(f"Spawned RADAR Sensor: {radar.id} at {transform} with range {radar_range}m")
 
     def callback(data):  # carla.RadarMeasurement
         me = carla_env_weak_ref()

@@ -119,7 +119,7 @@ class DQNAgent(BaseAgent):
             target_param.data.copy_(tau*local_param.data + (1.0-tau)*target_param.data)
     
     def save(self, directory_path, model_name="dqn_agent"):
-        """Saves the Q-network, target Q-network, and optimizer states."""
+        """Saves the Q-network, target Q-network, optimizer states, and current timesteps."""
         try:
             if not os.path.exists(directory_path):
                 os.makedirs(directory_path)
@@ -128,27 +128,29 @@ class DQNAgent(BaseAgent):
             q_network_path = os.path.join(directory_path, f"{model_name}_q_network.pth")
             target_q_network_path = os.path.join(directory_path, f"{model_name}_target_q_network.pth")
             optimizer_path = os.path.join(directory_path, f"{model_name}_optimizer.pth")
-            # Optional: Save model constructor args if they are complex or not easily reproducible
-            # constructor_args_path = os.path.join(directory_path, f"{model_name}_constructor_args.pkl")
+            agent_state_path = os.path.join(directory_path, f"{model_name}_agent_state.pth")
 
             torch.save(self.q_network.state_dict(), q_network_path)
             torch.save(self.target_q_network.state_dict(), target_q_network_path)
             torch.save(self.optimizer.state_dict(), optimizer_path)
-            # import pickle
-            # with open(constructor_args_path, 'wb') as f:
-            #    pickle.dump(self.model_constructor_args, f)
             
-            logger.info(f"Saved DQN agent models to {directory_path} with prefix '{model_name}'")
+            agent_state = {
+                'timesteps': self.timesteps
+                # Add other agent-specific state variables here if needed in the future
+            }
+            torch.save(agent_state, agent_state_path)
+            
+            logger.info(f"Saved DQN agent models and state to {directory_path} with prefix '{model_name}'")
         except Exception as e:
             logger.error(f"Error saving DQN agent models: {e}", exc_info=True)
 
     def load(self, directory_path, model_name="dqn_agent", map_location=None):
-        """Loads the Q-network, target Q-network, and optimizer states."""
+        """Loads the Q-network, target Q-network, optimizer states, and current timesteps."""
         try:
             q_network_path = os.path.join(directory_path, f"{model_name}_q_network.pth")
             target_q_network_path = os.path.join(directory_path, f"{model_name}_target_q_network.pth")
             optimizer_path = os.path.join(directory_path, f"{model_name}_optimizer.pth")
-            # constructor_args_path = os.path.join(directory_path, f"{model_name}_constructor_args.pkl")
+            agent_state_path = os.path.join(directory_path, f"{model_name}_agent_state.pth")
 
             if not os.path.exists(q_network_path):
                 logger.error(f"Q-Network model file not found at {q_network_path}")
@@ -177,6 +179,14 @@ class DQNAgent(BaseAgent):
                 self.optimizer.load_state_dict(torch.load(optimizer_path, map_location=device_to_load_on))
             else:
                 logger.warning(f"Optimizer state file not found at {optimizer_path}. Optimizer not loaded.")
+
+            if os.path.exists(agent_state_path):
+                agent_state = torch.load(agent_state_path, map_location=device_to_load_on)
+                self.timesteps = agent_state.get('timesteps', 0)
+                logger.info(f"Loaded agent state (timesteps: {self.timesteps}) from {agent_state_path}")
+            else:
+                self.timesteps = 0 # Default if not found
+                logger.warning(f"Agent state file not found at {agent_state_path}. Timesteps reset to 0.")
 
             self.q_network.train() # Default to train mode after loading for continued training
             self.target_q_network.eval() # Target network is always in eval mode except during direct state_dict load
