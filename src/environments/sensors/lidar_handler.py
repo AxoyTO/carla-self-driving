@@ -11,10 +11,10 @@ from gymnasium import spaces
 logger = logging.getLogger(__name__)
 
 # Default LIDAR parameters
-DEFAULT_LIDAR_CHANNELS = 128
+DEFAULT_LIDAR_CHANNELS = 32
 DEFAULT_LIDAR_RANGE = 50.0  # meters
-DEFAULT_LIDAR_POINTS_PER_SECOND = 240000 # Increased from 120000 for more density
-DEFAULT_LIDAR_ROTATION_FREQUENCY = 5.0 # Hz
+DEFAULT_LIDAR_POINTS_PER_SECOND = 60000 # Drastically reduced from 240000
+DEFAULT_LIDAR_ROTATION_FREQUENCY = 10.0 # Reverted from 5.0 Hz
 DEFAULT_LIDAR_UPPER_FOV = 15.0
 DEFAULT_LIDAR_LOWER_FOV = -25.0
 DEFAULT_PROCESSED_LIDAR_NUM_POINTS = 360 # Number of points after processing
