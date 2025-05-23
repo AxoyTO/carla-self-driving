@@ -192,6 +192,7 @@ src-alternative
 /src/model_checkpoints/
 /src/sensor_data/
 /src/tensorboard_logs/
+/src/sensor_capture/
 
 # Build artifacts
 /build/
