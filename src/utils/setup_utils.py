@@ -38,6 +38,8 @@ def parse_arguments():
     # --- Pygame Display (CARLA Environment) ---
     parser.add_argument("--enable-pygame-display", action="store_true", default=None, 
                         help="Enable the Pygame display window for CARLA. Overrides config if present.")
+    parser.add_argument("--disable-sensor-views", action="store_true", default=False,
+                        help="Disable sensor views (RGB, Depth, Semantic, LIDAR, RADAR) in Pygame display for performance. Spectator view remains.")
     parser.add_argument("--pygame-width", type=int, default=config.PYGAME_WIDTH,
                         help=f"Pygame display width (default: {config.PYGAME_WIDTH}).")
     parser.add_argument("--pygame-height", type=int, default=config.PYGAME_HEIGHT,
