@@ -26,7 +26,40 @@ def get_radar_observation_space(max_detections=DEFAULT_PROCESSED_RADAR_MAX_DETEC
         dtype=np.float32
     )
 
-def setup_radar_sensor(world, vehicle, carla_env_weak_ref, radar_config=None, transform=None):
+def process_radar_data(radar_measurement: carla.RadarMeasurement, max_detections: int) -> np.ndarray:
+    """Processes raw RADAR data into a fixed-size NumPy array.
+       Returns [depth, azimuth, altitude, velocity] for each detection, padded/truncated to max_detections.
+    """
+    detections = []
+    for detection in radar_measurement:
+        detections.append([
+            detection.depth,      # float (meters)
+            detection.azimuth,    # float (radians)
+            detection.altitude,   # float (radians)
+            detection.velocity    # float (m/s, towards sensor is negative)
+        ])
+    
+    num_detected = len(detections)
+    processed_detections = np.zeros((max_detections, 4), dtype=np.float32)
+
+    if num_detected > 0:
+        if num_detected > max_detections:
+            # Simple truncation if more detections than max_detections
+            # Could be smarter (e.g., sort by depth/velocity and take closest/fastest)
+            processed_detections[:, :] = np.array(detections[:max_detections])
+        else:
+            # Pad with zeros if fewer detections
+            processed_detections[:num_detected, :] = np.array(detections)
+            
+    return processed_detections
+
+def _radar_callback(weak_self, radar_data: carla.RadarMeasurement, sensor_key: str, max_detections_processed: int):
+    self = weak_self()
+    if not self or not hasattr(self, 'latest_sensor_data'): return
+    processed_numpy_array = process_radar_data(radar_data, max_detections_processed)
+    self.latest_sensor_data[sensor_key] = processed_numpy_array
+
+def setup_radar_sensor(world, vehicle, env_ref, radar_config, transform, sensor_key='radar'):
     """Spawns and configures a RADAR sensor."""
     blueprint_library = world.get_blueprint_library()
     radar_bp = blueprint_library.find('sensor.other.radar')
@@ -47,36 +80,9 @@ def setup_radar_sensor(world, vehicle, carla_env_weak_ref, radar_config=None, tr
     if transform is None:
         transform = carla.Transform(carla.Location(x=2.0, z=1.0))  # Default front bumper
 
-    radar = world.spawn_actor(radar_bp, transform, attach_to=vehicle)
-    logger.debug(f"Spawned RADAR Sensor: {radar.id} at {transform} with range {radar_range}m")
-
-    def callback(data):  # carla.RadarMeasurement
-        me = carla_env_weak_ref()
-        if me:
-            me.latest_sensor_data['radar'] = data
-    radar.listen(callback)
-    return radar
-
-def process_radar_data(raw_data, max_target_detections=DEFAULT_PROCESSED_RADAR_MAX_DETECTIONS):
-    """Processes raw RADAR data (carla.RadarMeasurement) to a fixed-size NumPy array."""
-    target_shape = (max_target_detections, 4)
-    if raw_data is None:
-        return np.zeros(target_shape, dtype=np.float32)
-
-    detections_list = []
-    for detection in raw_data:  # Iterate carla.RadarDetection
-        # Each detection has: detection.depth, detection.azimuth, detection.altitude, detection.velocity
-        detections_list.append([
-            detection.depth,      # Range in meters
-            detection.azimuth,    # Horizontal angle in radians
-            detection.altitude,   # Vertical angle in radians
-            detection.velocity    # Velocity of the detected object towards the sensor in m/s
-        ])
-    
-    # Ensure fixed size (take first N or pad)
-    processed_detections = np.zeros(target_shape, dtype=np.float32)
-    num_to_take = min(len(detections_list), max_target_detections)
-    if num_to_take > 0:
-        processed_detections[:num_to_take, :] = np.array(detections_list[:num_to_take], dtype=np.float32)
-    
-    return processed_detections 
+    radar_sensor = world.try_spawn_actor(radar_bp, transform, attach_to=vehicle)
+    if radar_sensor:
+        max_detections = radar_config.get('max_detections_processed', DEFAULT_PROCESSED_RADAR_MAX_DETECTIONS)
+        radar_sensor.listen(lambda data: _radar_callback(env_ref, data, sensor_key, max_detections))
+    logger.debug(f"Spawned RADAR Sensor: {radar_sensor.id} at {transform} with range {radar_range}m")
+    return radar_sensor 
