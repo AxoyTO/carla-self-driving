@@ -2,7 +2,7 @@ import carla
 import numpy as np
 import math
 import logging
-from typing import Tuple, Dict, List, Optional
+from typing import Tuple, Dict, List, Optional, Any
 import config # Import the config module
 
 logger = logging.getLogger(__name__)
@@ -262,14 +262,27 @@ class RewardCalculator:
             logger.error("RewardCalculator: CarlaEnv reference is None!")
             return None, None
         
-        current_phase_config = env.curriculum_phases[env.current_curriculum_phase_idx]
+        # Access curriculum config via the CurriculumManager instance in CarlaEnv
+        if not hasattr(env, 'curriculum_manager') or env.curriculum_manager is None:
+            logger.error("RewardCalculator: CarlaEnv has no_curriculum_manager or it is None!")
+            return "standard", env # Fallback to standard reward type, but log error
+
+        current_phase_config = env.curriculum_manager.get_current_phase_config()
+        if not current_phase_config:
+            logger.error("RewardCalculator: CurriculumManager returned no current phase config!")
+            return "standard", env # Fallback
+            
         reward_type = current_phase_config.get("reward_config", "standard")
         return reward_type, env
 
     def calculate_reward(self, vehicle, current_location, previous_location, 
                          collision_info, relevant_traffic_light_state, 
-                         current_action_for_reward, forward_speed_debug, 
-                         carla_map, target_waypoint) -> Tuple[float, bool, bool, bool]:
+                         current_action_for_reward, # This name matches the old direct param
+                         forward_speed_debug, 
+                         carla_map, target_waypoint,
+                         lane_invasion_event: Optional[carla.LaneInvasionEvent] = None,
+                         action_taken: Optional[Any] = None # Add the new action_taken parameter
+                        ) -> Tuple[float, bool, bool, bool]:
         """
         Calculates the reward for the current step.
         Returns a tuple: (reward_value, collision_flag_for_hud, proximity_flag_for_hud, on_sidewalk_flag_for_hud)
@@ -280,49 +293,40 @@ class RewardCalculator:
         hud_on_sidewalk_flag = False
 
         reward_type, env = self._get_current_reward_type_and_env()
-        if not env or not reward_type: # Critical error if env or reward_type cannot be determined
+        if not env or not reward_type:
             return self.PENALTY_COLLISION, True, False, False 
 
-        # Basic check for vehicle validity
         if vehicle is None or not vehicle.is_alive or current_location is None:
-            # This implies a severe issue, likely a collision that destroyed the vehicle before this step.
-            # The collision sensor should ideally catch this, but as a fallback:
             return self.PENALTY_COLLISION, True, False, False
 
-        lane_invasion_event = env.latest_sensor_data.get('lane_invasion_event')
         current_speed_mps = forward_speed_debug
         current_speed_kmh = current_speed_mps * 3.6
 
-        # Action 5 is typically reverse in the discrete action mapping
         is_reversing_control = vehicle.get_control().reverse 
-        intended_reverse_action = (current_action_for_reward == 5) if env.discrete_actions else False # Approx for discrete
+        # Use the `action_taken` parameter now, which corresponds to `current_action_for_reward` from CarlaEnv
+        intended_reverse_action = (action_taken == 5) if env.discrete_actions else False
 
-        # --- Phase-Specific Base Penalties ---
         if reward_type == "phase0":
             total_reward += self.phase0_penalty_per_step
-            # Phase0 off-road check (simplified, as lane keeping is not the primary focus)
             if carla_map:
                 wp_phase0 = carla_map.get_waypoint(current_location, project_to_road=True, lane_type=carla.LaneType.Any)
                 if wp_phase0 and wp_phase0.lane_type != carla.LaneType.Driving:
                     total_reward += self.phase0_offroad_penalty
-                elif not wp_phase0: # Completely off-road, no waypoint found
+                elif not wp_phase0:
                     total_reward += self.phase0_offroad_penalty * self.phase0_offroad_no_waypoint_multiplier
         elif reward_type == "standard":
             total_reward += self.PENALTY_PER_STEP
 
-        # --- Distance and Goal Reward (Common to phases, logic varies within helper) ---
-        current_phase_config = env.curriculum_phases[env.current_curriculum_phase_idx] if env else {}
+        current_phase_config = env.curriculum_manager.get_current_phase_config() if env.curriculum_manager else {}
         require_stop_at_goal = current_phase_config.get("require_stop_at_goal", False)
         total_reward += self._calculate_distance_goal_reward(
             current_location, previous_location, target_waypoint, reward_type, current_speed_mps, require_stop_at_goal
         )
 
-        # --- Stuck/Reversing Penalties (Logic varies with phase within helper) ---
         total_reward += self._calculate_stuck_reversing_penalty(
-            current_speed_mps, is_reversing_control, intended_reverse_action, reward_type
+            current_speed_mps, is_reversing_control, intended_reverse_action, reward_type # intended_reverse_action uses action_taken
         )
 
-        # --- Standard Mode Detailed Rewards/Penalties ---
         if reward_type == "standard":
             total_reward += self._calculate_speed_reward(vehicle, current_speed_kmh, is_reversing_control)
             
@@ -330,27 +334,25 @@ class RewardCalculator:
                 vehicle, current_location, carla_map, lane_invasion_event
             )
             total_reward += lane_reward
-            if on_sidewalk_from_lane_calc: hud_on_sidewalk_flag = True # Update global sidewalk flag
+            if on_sidewalk_from_lane_calc: hud_on_sidewalk_flag = True
 
             total_reward += self._calculate_traffic_light_reward(
                 vehicle, relevant_traffic_light_state, current_speed_mps
             )
             
             prox_penalty, prox_flag_from_calc = self._calculate_proximity_penalty(
-                vehicle, current_location, env.world # env.world needed for get_actors
+                vehicle, current_location, env.world
             )
             total_reward += prox_penalty
             if prox_flag_from_calc: hud_proximity_flag = True
 
-        # --- Collision Penalty (Applies to all phases, checked last as it's severe) ---
-        # Note: collision_info['count'] is reset in CarlaEnv *after* reward calculation and done check
         coll_penalty, coll_flag_from_calc = self._calculate_collision_penalty(collision_info)
         total_reward += coll_penalty
         if coll_flag_from_calc: hud_collision_flag = True
         
-        # Ensure sidewalk flag is updated if a collision or other event implies it,
-        # though lane keeping is the primary source.
-        # For instance, a severe collision might push onto a sidewalk.
-        # For now, `_calculate_lane_keeping_rewards_penalties` is the main source of `hud_on_sidewalk_flag`.
+        # Update internal state flags that CarlaEnv._check_done might use
+        self.last_collision_flag = hud_collision_flag
+        self.last_on_sidewalk_flag = hud_on_sidewalk_flag
+        self.last_proximity_penalty_flag = hud_proximity_flag
 
         return total_reward, hud_collision_flag, hud_proximity_flag, hud_on_sidewalk_flag 

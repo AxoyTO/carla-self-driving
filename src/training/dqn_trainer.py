@@ -46,86 +46,109 @@ class DQNTrainer:
 
         # Saving parameters from args
         self.save_interval = getattr(args, 'save_interval', 50)
-        self.run_specific_save_dir = getattr(args, 'run_specific_save_dir', './model_checkpoints/default_run') # Ensure this is passed correctly or set
-        self.current_best_model_dir = getattr(args, 'current_best_model_dir', os.path.join(self.run_specific_save_dir, 'best_model'))
+        self.model_base_save_dir = args.save_dir 
+        self.current_best_model_dir = os.path.join(self.model_base_save_dir, "best_model")
 
         self.start_episode = 1
         self.best_eval_score = -float('inf')
-        self.last_eval_score = -float('inf')  # Track the most recent evaluation score for checkpoint saving
+        self.last_eval_score = -float('inf')
         
         if args.load_model_from:
-            # Attempt to load best_eval_score if continuing a run
-            # Try multiple possible locations for the best_score.txt file
-            score_loaded = False
-            
-            # First, try to load from the model directory itself
-            score_path = os.path.join(args.load_model_from, "best_score.txt")
-            if os.path.exists(score_path):
+            # Try to load best_eval_score from the *parent* of the loaded model dir if it's a 'best_model' dir,
+            # or from the model dir itself if it's an episode checkpoint.
+            # The primary source for best_eval_score should now be the best_score.txt directly in self.model_base_save_dir
+            score_file_in_base_dir = os.path.join(self.model_base_save_dir, "best_score.txt")
+            score_file_in_loaded_model_dir = os.path.join(args.load_model_from, "best_score.txt") # If loading from best_model dir
+
+            score_to_load = None
+            if os.path.exists(score_file_in_base_dir):
+                score_to_load = score_file_in_base_dir
+            elif os.path.exists(score_file_in_loaded_model_dir) and "best_model" in args.load_model_from.lower():
+                score_to_load = score_file_in_loaded_model_dir
+            # Add other potential legacy paths if needed here, but new saves will put it in model_base_save_dir
+
+            if score_to_load:
                 try:
-                    with open(score_path, "r") as f:
+                    with open(score_to_load, "r") as f:
                         self.best_eval_score = float(f.read().strip())
-                        logger.info(f"Loaded best_eval_score from model directory: {self.best_eval_score}")
-                        score_loaded = True
+                        logger.info(f"Loaded best_eval_score from {score_to_load}: {self.best_eval_score}")
                 except (ValueError, IOError) as e:
-                    logger.warning(f"Error reading score file at {score_path}: {e}")
+                    logger.warning(f"Error reading score file at {score_to_load}: {e}")
+            else:
+                logger.info("No valid best_score.txt found in expected locations. Starting with fresh best score if not resuming a checkpoint score.")
+
+    def _process_step(self, state, action) -> Tuple[dict, float, bool, bool, dict]:
+        """Processes a single step in the environment.
+        
+        Args:
+            state: Current state
+            action: Action to take
             
-            # If not found in model directory, try parent directory
-            if not score_loaded and os.path.dirname(args.load_model_from):
-                parent_score_path = os.path.join(os.path.dirname(args.load_model_from), "best_score.txt")
-                if os.path.exists(parent_score_path):
-                    try:
-                        with open(parent_score_path, "r") as f:
-                            self.best_eval_score = float(f.read().strip())
-                            logger.info(f"Loaded best_eval_score from parent directory: {self.best_eval_score}")
-                            score_loaded = True
-                    except (ValueError, IOError) as e:
-                        logger.warning(f"Error reading score file at {parent_score_path}: {e}")
-            
-            if not score_loaded:
-                logger.info("No valid best_score.txt found. Starting with fresh best score.")
+        Returns:
+            Tuple containing:
+            - next_state: New state after action
+            - reward: Reward received
+            - terminated: Whether episode terminated
+            - truncated: Whether episode was truncated
+            - info: Additional info from environment
+        """
+        next_state, reward, terminated, truncated, info = self.env.step(action)
+        return next_state, reward, terminated, truncated, info
+
+    def _update_replay_buffer(self, state, action, reward, next_state, done):
+        """Updates the replay buffer with the latest experience."""
+        self.replay_buffer.add(state, action, reward, next_state, done)
 
     def _run_episode(self, i_episode: int, current_epsilon: float) -> Tuple[float, float, int, str, bool]:
         """Runs a single training episode.
+        
+        Args:
+            i_episode: Current episode number
+            current_epsilon: Current epsilon value for exploration
+            
         Returns:
-            episode_score (float): Total score for the episode.
-            avg_episode_loss (float): Average training loss for the episode (or None).
-            steps_taken (int): Number of steps taken in the episode.
-            termination_reason (str): Reason for episode termination.
-            runtime_error_occurred (bool): Flag indicating if a runtime error happened.
+            Tuple containing:
+            - episode_score: Total score for the episode
+            - avg_episode_loss: Average training loss for the episode
+            - steps_taken: Number of steps taken
+            - termination_reason: Why the episode ended
+            - runtime_error_occurred: Whether a runtime error happened
         """
         try:
-            state, _ = self.env.reset() # Reset is called here, at the start of each episode run
+            state, _ = self.env.reset()
             episode_score = 0.0
             episode_losses = []
             termination_reason = "max_steps_reached"
             runtime_error_occurred = False
 
             for t_step in range(self.max_steps_per_episode):
+                # Select and execute action
                 action = self.agent.select_action(state, current_epsilon)
-                next_state, reward, terminated, truncated, info = self.env.step(action)
+                next_state, reward, terminated, truncated, info = self._process_step(state, action)
                 done = terminated or truncated
 
-                self.replay_buffer.add(state, action, reward, next_state, done)
-                
+                # Update replay buffer and learn
+                self._update_replay_buffer(state, action, reward, next_state, done)
                 current_loss = self.agent.step_experience_and_learn()
                 if current_loss is not None:
                     episode_losses.append(current_loss)
 
+                # Update state and score
                 state = next_state
                 episode_score += reward
+
                 if done:
                     if terminated:
                         termination_reason = info.get("termination_reason", "terminated_by_env")
-                    # If truncated, termination_reason remains "max_steps_reached" (default or set if loop finishes)
-                    break 
-            # Ensure steps_taken is accurate, t_step is 0-indexed
+                    break
+
+            # Calculate final metrics
             steps_taken = t_step + 1
             avg_episode_loss = np.mean(episode_losses) if episode_losses else None
             return episode_score, avg_episode_loss, steps_taken, termination_reason, runtime_error_occurred
-        
+
         except RuntimeError as e:
             logger.error(f"Runtime error during episode {i_episode}: {e}", exc_info=True)
-            # Return dummy values indicating failure within this episode run
             return 0.0, None, 0, "runtime_error", True
 
     def _log_episode_summary(self, i_episode: int, total_episodes: int, 
@@ -154,120 +177,197 @@ class DQNTrainer:
         if i_episode % self.eval_interval == 0:
             logger.info(f"--- Starting Evaluation after Training Episode {i_episode} ---")
             eval_avg_score, eval_goal_rate = self.evaluate_agent()
-            self.last_eval_score = eval_avg_score  # Store the most recent eval score
+            self.last_eval_score = eval_avg_score
             
             logger.info(f"Evaluation Avg Score: {eval_avg_score:.2f}, Goal Rate: {eval_goal_rate*100:.1f}%")
             self.tb_logger.log_scalar("evaluation/avg_score", eval_avg_score, i_episode)
             self.tb_logger.log_scalar("evaluation/goal_reached_rate", eval_goal_rate, i_episode)
 
             if eval_avg_score > self.best_eval_score:
-                logger.info(f"New best evaluation score: {eval_avg_score:.2f} (previously: {self.best_eval_score:.2f}). Saving best model.")
+                logger.info(f"New best: {eval_avg_score:.2f} (prev: {self.best_eval_score:.2f}). Saving to {self.current_best_model_dir}")
                 self.best_eval_score = eval_avg_score
+                os.makedirs(self.current_best_model_dir, exist_ok=True)
+                self.agent.save(self.current_best_model_dir, model_name="best_dqn_agent")
                 
-                # Construct path for the best model (within the run-specific directory)
-                # self.current_best_model_dir is already defined in __init__ as os.path.join(self.run_specific_save_dir, "best_model")
-                os.makedirs(self.current_best_model_dir, exist_ok=True) # Ensure dir exists
-                self.agent.save(self.current_best_model_dir, model_name="best_dqn_agent") # Pass directory
-                
-                # Save the best score to a file INSIDE the best model directory
-                with open(os.path.join(self.current_best_model_dir, "best_score.txt"), "w") as f:
+                # Save the best score to a file directly in the model_base_save_dir
+                with open(os.path.join(self.model_base_save_dir, "best_score.txt"), "w") as f:
                     f.write(str(self.best_eval_score))
-                    
-                # For backward compatibility, also save in the parent directory
-                with open(os.path.join(self.run_specific_save_dir, "best_score.txt"), "w") as f:
+                # Also save it inside the best_model directory for redundancy/clarity
+                with open(os.path.join(self.current_best_model_dir, "best_score.txt"), "w") as f:
                     f.write(str(self.best_eval_score))
             logger.info(f"--- Finished Evaluation ---")
 
         # Periodic Checkpoint Saving
         if i_episode % self.save_interval == 0:
-            checkpoint_dir = os.path.join(self.run_specific_save_dir, f"episode_{i_episode}")
-            os.makedirs(checkpoint_dir, exist_ok=True) # Ensure dir exists
-            self.agent.save(checkpoint_dir) # Pass directory for checkpoint
+            # Checkpoints are saved directly under model_base_save_dir now
+            checkpoint_dir = os.path.join(self.model_base_save_dir, f"episode_{i_episode}")
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            self.agent.save(checkpoint_dir)
             
-            # Save the most recent evaluation score with this checkpoint
             with open(os.path.join(checkpoint_dir, "score.txt"), "w") as f:
                 f.write(str(self.last_eval_score))
                 f.write(f"\nEval Goal Rate: {eval_goal_rate*100:.1f}%")
                 
-            logger.info(f"Saved checkpoint at episode {i_episode} to {checkpoint_dir} with score: {self.last_eval_score:.2f}")
+            logger.info(f"Saved checkpoint at ep {i_episode} to {checkpoint_dir} with score: {self.last_eval_score:.2f}")
+
+    def _run_evaluation_episode(self, episode_num: int) -> Tuple[float, int, str]:
+        """Runs a single evaluation episode.
+        
+        Args:
+            episode_num: The episode number being evaluated
+            
+        Returns:
+            Tuple containing:
+            - episode_score: Total score for the episode
+            - steps_taken: Number of steps taken
+            - termination_reason: Why the episode ended
+        """
+        state, _ = self.env.reset()
+        episode_score = 0
+        max_eval_steps = getattr(self.env, 'spec', {}).get('max_episode_steps', 1000) if hasattr(self.env, 'spec') else 1000
+        
+        for eval_step in range(max_eval_steps):
+            action = self.agent.select_action(state, self.epsilon_eval)
+            next_state, reward, terminated, truncated, info = self.env.step(action)
+            done = terminated or truncated
+            state = next_state
+            episode_score += reward
+            
+            if done:
+                termination_reason = info.get("termination_reason", "unknown")
+                logger.info(f"  Eval Episode {episode_num}/{self.num_eval_episodes} "
+                          f"Score: {episode_score:.2f}, "
+                          f"Steps: {eval_step + 1}, "
+                          f"Termination: {termination_reason}")
+                return episode_score, eval_step + 1, termination_reason
+                
+        # If we get here, we hit max steps
+        return episode_score, max_eval_steps, "max_steps_reached"
+
+    def _log_evaluation_summary(self, total_score: float, goals_reached: int, 
+                              termination_reasons: dict, num_episodes: int):
+        """Logs a summary of the evaluation results.
+        
+        Args:
+            total_score: Sum of all episode scores
+            goals_reached: Number of episodes where goal was reached
+            termination_reasons: Dict mapping reasons to counts
+            num_episodes: Total number of evaluation episodes
+        """
+        avg_score = total_score / num_episodes if num_episodes > 0 else 0
+        goal_reached_rate = goals_reached / num_episodes if num_episodes > 0 else 0
+        
+        logger.info("\nEvaluation Summary:")
+        logger.info(f"  Average Score: {avg_score:.2f}")
+        logger.info(f"  Goal Reached Rate: {goal_reached_rate*100:.1f}%")
+        logger.info("  Termination Reasons:")
+        for reason, count in termination_reasons.items():
+            percentage = (count / num_episodes) * 100
+            logger.info(f"    - {reason}: {count} episodes ({percentage:.1f}%)")
+
+    def evaluate_agent(self):
+        """Evaluates the agent's performance over a number of episodes.
+        
+        Returns:
+            Tuple containing:
+            - avg_score: Average score across all evaluation episodes
+            - goal_reached_rate: Percentage of episodes where goal was reached
+        """
+        logger.info(f"Running evaluation for {self.num_eval_episodes} episodes.")
+        total_score = 0.0
+        goals_reached = 0
+        termination_reasons = {}
+        
+        # Store original pygame state and disable during evaluation
+        original_pygame_state = self.env.enable_pygame_display
+        self.env.enable_pygame_display = False
+
+        try:
+            for i in range(self.num_eval_episodes):
+                episode_score, steps_taken, termination_reason = self._run_evaluation_episode(i + 1)
+                
+                # Update statistics
+                total_score += episode_score
+                termination_reasons[termination_reason] = termination_reasons.get(termination_reason, 0) + 1
+                
+                if termination_reason in ["goal_reached", "goal_reached_and_stopped"]:
+                    goals_reached += 1
+            
+            # Log summary of all episodes
+            self._log_evaluation_summary(total_score, goals_reached, 
+                                       termination_reasons, self.num_eval_episodes)
+            
+            # Calculate final metrics
+            avg_score = total_score / self.num_eval_episodes if self.num_eval_episodes > 0 else 0
+            goal_reached_rate = goals_reached / self.num_eval_episodes if self.num_eval_episodes > 0 else 0
+            
+            return avg_score, goal_reached_rate
+            
+        except Exception as e:
+            logger.error(f"Error during evaluation: {e}", exc_info=True)
+            return 0.0, 0.0
+        finally:
+            self.env.enable_pygame_display = original_pygame_state  # Restore pygame state
+
+    def _update_epsilon(self, current_epsilon: float) -> float:
+        """Updates epsilon for the next episode using decay.
+        
+        Args:
+            current_epsilon: Current epsilon value
+            
+        Returns:
+            New epsilon value after decay
+        """
+        return max(self.epsilon_end, self.epsilon_decay * current_epsilon)
+
+    def _save_final_model(self):
+        """Saves the final model and its performance metrics."""
+        # Final model also saved directly under model_base_save_dir
+        final_model_dir = os.path.join(self.model_base_save_dir, "final_model")
+        os.makedirs(final_model_dir, exist_ok=True)
+        self.agent.save(final_model_dir)
+        
+        with open(os.path.join(final_model_dir, "score.txt"), "w") as f:
+            f.write(str(self.last_eval_score))
+            if hasattr(self, 'last_goal_rate'): # Check if last_goal_rate was set
+                f.write(f"\nEval Goal Rate: {self.last_goal_rate*100:.1f}%")
+            
+        logger.info(f"Saved final model to {final_model_dir} with score: {self.last_eval_score:.2f}")
 
     def train_loop(self):
+        """Main training loop that runs for the specified number of episodes."""
         logger.info(f"Starting training loop for {self.num_episodes} episodes from episode {self.start_episode}.")
-        scores_deque = deque(maxlen=100) # For rolling average score
-        current_epsilon_for_episode = self.epsilon_start # Epsilon to be USED for the upcoming episode
+        scores_deque = deque(maxlen=100)  # For rolling average score
+        current_epsilon = self.epsilon_start  # Epsilon for the upcoming episode
 
-        for i_episode in range(self.start_episode, self.num_episodes + 1):
-            try:
-                # Epsilon passed to _run_episode is the one for THIS episode
+        try:
+            for i_episode in range(self.start_episode, self.num_episodes + 1):
+                # Run episode with current epsilon
                 episode_score, avg_episode_loss, steps_taken, termination_reason, runtime_error = \
-                    self._run_episode(i_episode, current_epsilon_for_episode)
+                    self._run_episode(i_episode, current_epsilon)
 
                 if runtime_error:
                     logger.warning(f"Episode {i_episode} ended due to a runtime error. Stopping training loop.")
                     break 
 
+                # Update statistics
                 scores_deque.append(episode_score)
                 avg_score_deque = np.mean(scores_deque)
                 
-                # Log summary for the completed episode (using epsilon that was applied)
+                # Log episode summary
                 self._log_episode_summary(
                     i_episode, self.num_episodes, episode_score, avg_score_deque,
-                    current_epsilon_for_episode, steps_taken, avg_episode_loss, termination_reason
+                    current_epsilon, steps_taken, avg_episode_loss, termination_reason
                 )
                 
-                # Decay epsilon for the NEXT episode
-                current_epsilon_for_episode = max(self.epsilon_end, self.epsilon_decay * current_epsilon_for_episode)
+                # Update epsilon for next episode
+                current_epsilon = self._update_epsilon(current_epsilon)
 
+                # Handle evaluation and model saving
                 self._handle_evaluation_and_saving(i_episode)
 
-            except KeyboardInterrupt:
-                logger.info(f"Training loop interrupted by user at episode {i_episode}.") 
-                break # Exit the main training loop
-            finally:
-                # Any cleanup specific to the end of an episode iteration (even if interrupted) could go here.
-                pass 
-            
-        logger.info("Training loop finished.")
-        final_model_dir = os.path.join(self.run_specific_save_dir, "final_model")
-        os.makedirs(final_model_dir, exist_ok=True) # Ensure dir exists
-        self.agent.save(final_model_dir)
-        
-        # Save final scores
-        with open(os.path.join(final_model_dir, "score.txt"), "w") as f:
-            f.write(str(self.last_eval_score))
-            if hasattr(self, 'last_goal_rate'):
-                f.write(f"\nEval Goal Rate: {self.last_goal_rate*100:.1f}%")
-            
-        logger.info(f"Saved final model to {final_model_dir} with score: {self.last_eval_score:.2f}")
-
-    def evaluate_agent(self):
-        """Evaluates the agent's performance over a number of episodes."""
-        logger.info(f"Running evaluation for {self.num_eval_episodes} episodes.")
-        total_score = 0.0
-        goals_reached = 0
-        original_pygame_state = self.env.enable_pygame_display
-        self.env.enable_pygame_display = False # Optionally disable rendering during eval for speed
-
-        for i in range(self.num_eval_episodes):
-            state, _ = self.env.reset()
-            episode_score = 0
-            done = False
-            max_eval_steps = getattr(self.env, 'spec', {}).get('max_episode_steps', 1000) if hasattr(self.env, 'spec') else 1000
-            
-            for eval_step in range(max_eval_steps): 
-                action = self.agent.select_action(state, self.epsilon_eval)
-                next_state, reward, terminated, truncated, info = self.env.step(action)
-                done = terminated or truncated
-                state = next_state
-                episode_score += reward
-                if done:
-                    if info.get("termination_reason") == "goal_reached":
-                        goals_reached += 1
-                    break
-            total_score += episode_score
-            logger.info(f"  Eval Episode {i+1}/{self.num_eval_episodes} Score: {episode_score:.2f}, Termination: {info.get('termination_reason', 'unknown')}")
-        
-        self.env.enable_pygame_display = original_pygame_state # Restore pygame state
-        avg_score = total_score / self.num_eval_episodes if self.num_eval_episodes > 0 else 0
-        goal_reached_rate = goals_reached / self.num_eval_episodes if self.num_eval_episodes > 0 else 0
-        return avg_score, goal_reached_rate 
+        except KeyboardInterrupt:
+            logger.info(f"Training loop interrupted by user at episode {i_episode}.")
+        finally:
+            self._save_final_model()
+            logger.info("Training loop finished.") 
