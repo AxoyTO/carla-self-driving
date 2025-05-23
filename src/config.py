@@ -11,6 +11,7 @@ LOG_LEVEL = "INFO"
 ENABLE_PYGAME_DISPLAY = False
 PYGAME_WIDTH = 1920
 PYGAME_HEIGHT = 1080
+DISABLE_SENSOR_VIEWS = False # Default to showing all views
 SAVE_DIR = "./model_checkpoints" # Base directory for saving all runs
 LOAD_MODEL_FROM = None # e.g., "./model_checkpoints/run_xxxxxxxx_xxxxxx"
 SAVE_INTERVAL = 50 # episodes
@@ -152,41 +153,78 @@ CARLA_DEFAULT_RADAR_VERTICAL_FOV = 10.0  # degrees
 CARLA_DEFAULT_RADAR_POINTS_PER_SECOND = 1500
 CARLA_PROCESSED_RADAR_MAX_DETECTIONS = 20
 
+# --- Action Mapping for Discrete Actions --- 
+# Defines the control outputs for each discrete action index.
+DISCRETE_ACTION_MAP = {
+    0: {"throttle": 0.75, "steer": 0.0,  "brake": 0.0, "reverse": False, "name": "Fwd-Fast"},
+    1: {"throttle": 0.5,  "steer": -0.5, "brake": 0.0, "reverse": False, "name": "Fwd-Left"},
+    2: {"throttle": 0.5,  "steer": 0.5,  "brake": 0.0, "reverse": False, "name": "Fwd-Right"},
+    3: {"throttle": 0.0,  "steer": 0.0,  "brake": 1.0, "reverse": False, "name": "Brake"},
+    4: {"throttle": 0.3,  "steer": 0.0,  "brake": 0.0, "reverse": False, "name": "Coast"}, # Gentle forward
+    5: {"throttle": 0.3,  "steer": 0.0,  "brake": 0.0, "reverse": True,  "name": "Reverse"}
+}
+
+# Action mapping to be used when reverse is disallowed by the current curriculum phase.
+# Action 5 (Reverse) is remapped to a moderate brake.
+DISCRETE_ACTION_MAP_NO_REVERSE = {
+    0: DISCRETE_ACTION_MAP[0],
+    1: DISCRETE_ACTION_MAP[1],
+    2: DISCRETE_ACTION_MAP[2],
+    3: DISCRETE_ACTION_MAP[3],
+    4: DISCRETE_ACTION_MAP[4],
+    5: {"throttle": 0.0,  "steer": 0.0,  "brake": 0.5, "reverse": False, "name": "Brake"} # Remapped Reverse
+}
+
+NUM_DISCRETE_ACTIONS = len(DISCRETE_ACTION_MAP) # Should be 6
+
 # --- CarlaEnv Default Curriculum Phases ---
 CARLA_DEFAULT_CURRICULUM_PHASES = [
     {"name": "Phase0_BasicControl_Straight", "episodes": 30, 
      "reward_config": "phase0", "spawn_config": "fixed_straight",
-     "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"}},
+     "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"},
+     "allow_reverse": False, "max_steps": 500},
 
     {"name": "Phase0_BasicControl_SimpleTurns", "episodes": 50, 
      "reward_config": "phase0", "spawn_config": "fixed_simple_turns", 
      "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"},
-     "require_stop_at_goal": True},
+     "require_stop_at_goal": True,
+     "allow_reverse": False, "max_steps": 750},
 
-    {"name": "Phase1_LaneFollowing", "episodes": 150, 
+    {"name": "Phase1_LaneFollowing", "episodes": 100, 
      "reward_config": "standard", "spawn_config": "random_gentle_curves", 
      "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"},
-     "require_stop_at_goal": True},
+     "require_stop_at_goal": True,
+     "allow_reverse": False, "max_steps": 1000},
+     
+    {"name": "Phase1_5_ReverseManeuvers", "episodes": 100, 
+     "reward_config": "standard", "spawn_config": "random_gentle_curves", # Consider specific spawn for reverse
+     "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"},
+     "require_stop_at_goal": True,
+     "allow_reverse": True, "max_steps": 700},
 
     {"name": "Phase2_NavigateStaticObstacles", "episodes": 300, 
      "reward_config": "standard", "spawn_config": "random_urban", 
      "traffic_config": {"num_vehicles": 10, "num_walkers": 0, "type": "static"},
-     "require_stop_at_goal": True},
+     "require_stop_at_goal": True,
+     "allow_reverse": True, "max_steps": 1500},
 
     {"name": "Phase3_TrafficLights", "episodes": 500, 
      "reward_config": "standard", "spawn_config": "random_urban_with_traffic_lights", 
      "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"},
-     "require_stop_at_goal": True},
+     "require_stop_at_goal": True,
+     "allow_reverse": True, "max_steps": 2000},
 
     {"name": "Phase4_LightDynamicTraffic", "episodes": 1000, 
      "reward_config": "standard", "spawn_config": "random_urban_full", 
      "traffic_config": {"num_vehicles": 15, "num_walkers": 0, "type": "dynamic"},
-     "require_stop_at_goal": True},
+     "require_stop_at_goal": True,
+     "allow_reverse": True, "max_steps": 2500},
 
     {"name": "Phase5_ComplexDriving", "episodes": 3000, 
      "reward_config": "standard", "spawn_config": "random_urban_full", 
      "traffic_config": {"num_vehicles": 30, "num_walkers": 20, "type": "dynamic"},
-     "require_stop_at_goal": True}
+     "require_stop_at_goal": True,
+     "allow_reverse": True, "max_steps": 3000}
 ]
 
 def get_config_dict(config_module):
