@@ -17,10 +17,20 @@ class TrafficManager:
 
         self.npc_vehicles: List[carla.Actor] = []
         self.npc_walkers: List[carla.Actor] = []
-        self.walker_controllers: List[carla.WalkerAIController] = []
+        self.walker_controllers: List[carla.Actor] = []  # Changed to Actor type for clarity
 
         self.vehicle_blueprints = self.world.get_blueprint_library().filter('vehicle.*')
+        # Filter out bicycles and motorcycles for better traffic behavior
+        self.vehicle_blueprints = [bp for bp in self.vehicle_blueprints if int(bp.get_attribute('number_of_wheels')) >= 4]
         self.walker_blueprints = self.world.get_blueprint_library().filter('walker.pedestrian.*')
+        
+        # Initialize CARLA's built-in traffic manager
+        self.carla_tm = self.client.get_trafficmanager() # Get the TM instance
+        self.tm_port = self.carla_tm.get_port() # Get the actual port the TM instance is running on
+        
+        # Set global traffic manager parameters
+        self.carla_tm.set_global_distance_to_leading_vehicle(2.5)  # Keep reasonable distance between vehicles
+        self.carla_tm.set_synchronous_mode(True)  # Match our synchronous environment
 
     def spawn_npcs(self, traffic_config: Dict):
         num_vehicles = traffic_config.get("num_vehicles", 0)
@@ -33,145 +43,255 @@ class TrafficManager:
 
         self.logger.debug(f"Spawning NPCs: {num_vehicles} vehicles, {num_walkers} walkers (type: {spawn_type})")
         
-        available_spawn_points = list(self.map.get_spawn_points()) # Get a mutable list
-        random.shuffle(available_spawn_points)
-
-        # Spawn Vehicles
-        for i in range(num_vehicles):
-            if not available_spawn_points:
-                self.logger.warning("No more available spawn points for vehicles.")
-                break
+        # First, let's spawn vehicles
+        if num_vehicles > 0:
+            self._spawn_vehicles(num_vehicles, spawn_type)
             
-            blueprint = random.choice(self.vehicle_blueprints)
-            if blueprint.has_attribute('color'):
-                blueprint.set_attribute('color', "{},{},{}".format(random.randint(0,255),random.randint(0,255),random.randint(0,255)))
-            if blueprint.has_attribute('driver_id'):
-                blueprint.set_attribute('driver_id', str(random.randint(1000, 9999)))
-            
-            spawn_point = available_spawn_points.pop(0) # Take one spawn point
-            
-            vehicle = self.world.try_spawn_actor(blueprint, spawn_point)
-            if vehicle:
-                self.npc_vehicles.append(vehicle)
-                if spawn_type == "dynamic":
-                    # Get CARLA's internal traffic manager
-                    tm = self.client.get_trafficmanager(self.client.get_trafficmanager_port())
-                    vehicle.set_autopilot(True, tm.get_port()) # Use TM port for autopilot
-                    
-                    # Adjust speeds based on time scale
-                    if self.time_scale != 1.0:
-                        # Set vehicle speed to scale with time_scale
-                        # Lower percentage = faster vehicle (counter-intuitive in CARLA TrafficManager)
-                        if self.time_scale > 1.0:
-                            # Scale is greater than 1 - vehicles should move faster
-                            speed_factor = 100.0 / self.time_scale  # Lower percentage = faster
-                        else:
-                            # Scale is less than 1 - vehicles should move slower
-                            speed_factor = 100.0 * (1.0 / self.time_scale)  # Higher percentage = slower
-                        
-                        tm.vehicle_percentage_speed_difference(vehicle, speed_factor)
-                        self.logger.debug(f"Vehicle {vehicle.id} speed factor set to {speed_factor}% to match time_scale {self.time_scale}")
-                    
-                # For "static", we just spawn them, they won't move.
-                self.logger.debug(f"Spawned vehicle {vehicle.id} at {spawn_point.location} (type: {spawn_type})")
-            else:
-                self.logger.warning(f"Failed to spawn vehicle at {spawn_point.location}")
-                available_spawn_points.append(spawn_point) # Add back if failed, try again later or for walkers
-
-        # Spawn Walkers (Pedestrians)
-        for i in range(num_walkers):
-            if not available_spawn_points: # Check again, though walkers use random locations, not spawn points
-                self.logger.warning("No spawn points left, cannot guarantee safe walker spawn near road.")
-                # For walkers, we don't strictly need a vehicle spawn point.
-                # We can pick a random location on the sidewalk.
-                spawn_location = carla.Location() # Placeholder
-                found_location = False
-                for _ in range(10): # Try 10 times to find a random sidewalk location
-                    spawn_location = self.world.get_random_location_from_navigation()
-                    if spawn_location:
-                        found_location = True
-                        break
-                if not found_location:
-                    self.logger.warning("Could not find random navigation location for walker. Skipping walker.")
-                    continue
-            else:
-                # Try to spawn near a road using remaining vehicle spawn points as a hint
-                # This is a simple way to get them somewhat near drivable areas.
-                # A more robust method would be to query sidewalk locations directly.
-                hint_spawn_point = random.choice(available_spawn_points) if available_spawn_points else self.map.get_spawn_points()[0]
-                spawn_location = self.world.get_random_location_from_navigation()
-                if not spawn_location: # Fallback if random nav location fails
-                    self.logger.warning(f"Failed to get random nav location, using hint: {hint_spawn_point.location}")
-                    spawn_location = hint_spawn_point.location
-
-            blueprint = random.choice(self.walker_blueprints)
-            if blueprint.has_attribute('is_invincible'):
-                blueprint.set_attribute('is_invincible', 'false')
-            
-            walker_actor = self.world.try_spawn_actor(blueprint, carla.Transform(spawn_location))
-
-            if walker_actor:
-                self.npc_walkers.append(walker_actor)
-                if spawn_type == "dynamic":
-                    controller_bp = self.world.get_blueprint_library().find('controller.ai.walker')
-                    ai_controller = self.world.try_spawn_actor(controller_bp, carla.Transform(), attach_to=walker_actor)
-                    if ai_controller:
-                        self.walker_controllers.append(ai_controller)
-                        ai_controller.start()
-                        ai_controller.go_to_location(self.world.get_random_location_from_navigation())
-                        
-                        # Adjust walker speed based on time_scale
-                        base_speed = 1.0 + random.random()  # Random speed: 1.0 to 2.0 m/s
-                        scaled_speed = base_speed * self.time_scale
-                        ai_controller.set_max_speed(scaled_speed)
-                        
-                        self.logger.debug(f"Spawned walker {walker_actor.id} at {spawn_location} with speed {scaled_speed:.2f} m/s (base: {base_speed:.2f}, scale: {self.time_scale}x)")
-                    else:
-                        self.logger.warning(f"Failed to spawn AI controller for walker {walker_actor.id}. Walker will be static.")
-                        walker_actor.destroy() # Clean up walker if controller fails
-                        self.npc_walkers.pop() # Remove from list
-                else:
-                    self.logger.debug(f"Spawned static walker {walker_actor.id} at {spawn_location}")
-            else:
-                self.logger.warning(f"Failed to spawn walker at {spawn_location}")
+        # Then, spawn walkers
+        if num_walkers > 0:
+            self._spawn_walkers(num_walkers, spawn_type)
         
         self.logger.info(f"Finished NPC spawning: {len(self.npc_vehicles)} vehicles, {len(self.npc_walkers)} walkers.")
+        
+        # Tick the world to properly initialize all actors
+        if self.world.get_settings().synchronous_mode:
+            self.world.tick()
+
+    def _spawn_vehicles(self, num_vehicles: int, spawn_type: str):
+        """Helper method to spawn vehicles with proper behavior"""
+        spawn_points = self.map.get_spawn_points()
+        
+        if not spawn_points:
+            self.logger.error("No spawn points found for vehicles!")
+            return
+            
+        random.shuffle(spawn_points)
+        spawn_actor_batch = []
+        
+        # Generate spawn commands for batch processing
+        for i in range(num_vehicles):
+            if i >= len(spawn_points):
+                self.logger.warning(f"Not enough spawn points for all vehicles. Spawning {i} instead of {num_vehicles}.")
+                break
+                
+            blueprint = random.choice(self.vehicle_blueprints)
+            
+            # Set random color
+            if blueprint.has_attribute('color'):
+                color = random.choice(blueprint.get_attribute('color').recommended_values)
+                blueprint.set_attribute('color', color)
+                
+            # Try not to spawn vehicles as the police or emergency vehicles
+            if blueprint.has_attribute('role_name'):
+                blueprint.set_attribute('role_name', 'autopilot')
+                
+            # Set as autopilot if dynamic
+            autopilot = spawn_type == "dynamic"
+            
+            spawn_point = spawn_points[i]
+            spawn_cmd = carla.command.SpawnActor(blueprint, spawn_point)
+            
+            # If dynamic, we'll command the traffic manager to take over
+            if autopilot:
+                spawn_cmd = spawn_cmd.then(carla.command.SetAutopilot(carla.command.FutureActor, True, self.tm_port))
+                
+            spawn_actor_batch.append(spawn_cmd)
+        
+        # Execute the batch spawn
+        results = self.client.apply_batch_sync(spawn_actor_batch, True)
+        vehicle_ids = []
+        
+        for i, result in enumerate(results):
+            if result.error:
+                self.logger.warning(f"Failed to spawn vehicle: {result.error}")
+            else:
+                vehicle_ids.append(result.actor_id)
+        
+        # Get the spawned vehicle actors
+        vehicles = self.world.get_actors(vehicle_ids)
+        self.npc_vehicles.extend(vehicles)
+        
+        # Configure traffic manager behavior for all vehicles
+        if spawn_type == "dynamic":
+            self.logger.info(f"Setting up {len(vehicles)} vehicles with autopilot")
+            
+            for vehicle in vehicles:
+                # Randomize driving behavior slightly for each vehicle
+                # Lower percentage = faster driving speed
+                speed_factor = random.uniform(80.0, 120.0)
+                
+                # Adjust for time scale
+                if self.time_scale != 1.0:
+                    speed_factor = speed_factor / self.time_scale  # Faster with higher time_scale
+                
+                # Set vehicle behavior parameters
+                self.carla_tm.vehicle_percentage_speed_difference(vehicle, speed_factor)
+                self.carla_tm.update_vehicle_lights(vehicle, True)  # Use vehicle lights
+                
+                # Randomize lane changing behavior
+                lane_change = random.choice([carla.LaneChange.NONE, carla.LaneChange.RIGHT, carla.LaneChange.LEFT, carla.LaneChange.BOTH])
+                self.carla_tm.set_path_finding_algorithm(vehicle, True)  # Use path finding
+                self.carla_tm.set_lane_change(vehicle, lane_change)
+                
+                # Some vehicles should respect traffic lights, others might not
+                self.carla_tm.ignore_lights_percentage(vehicle, random.randint(0, 20))
+                
+                # Some vehicles keep more distance than others
+                self.carla_tm.distance_to_leading_vehicle(vehicle, random.uniform(1.0, 4.0))
+                
+                self.logger.debug(f"Vehicle {vehicle.id} set up with speed factor {speed_factor:.1f}%")
+
+    def _spawn_walkers(self, num_walkers: int, spawn_type: str):
+        """Helper method to spawn walker pedestrians with proper behavior"""
+        # First, we'll spawn all the walker actors
+        spawn_points = []
+        
+        # Try to find valid spawn locations for walkers
+        for i in range(num_walkers * 2):  # Try more locations than needed
+            spawn_point = carla.Transform()
+            loc = self.world.get_random_location_from_navigation()
+            if loc:
+                spawn_point.location = loc
+                spawn_points.append(spawn_point)
+                
+        if not spawn_points:
+            self.logger.error("Could not find any walker spawn points!")
+            return
+            
+        # Limit to the actual number we want
+        spawn_points = spawn_points[:num_walkers]
+        
+        # Create walker blueprints
+        walker_batch = []
+        walker_speed = []
+        
+        for i, spawn_point in enumerate(spawn_points):
+            walker_bp = random.choice(self.walker_blueprints)
+            
+            # Set not invincible
+            if walker_bp.has_attribute('is_invincible'):
+                walker_bp.set_attribute('is_invincible', 'false')
+                
+            # Set the max speed
+            if walker_bp.has_attribute('speed'):
+                # Walker base speed - adjust based on walker type
+                base_speed = float(walker_bp.get_attribute('speed').recommended_values[1])
+                walker_speed.append(base_speed * self.time_scale)  # Scale with time_scale
+            else:
+                walker_speed.append(1.4 * self.time_scale)  # Default speed
+                
+            # Create spawn command
+            walker_batch.append(carla.command.SpawnActor(walker_bp, spawn_point))
+            
+        # Apply the batch and get walker actors
+        results = self.client.apply_batch_sync(walker_batch, True)
+        walker_ids = []
+        
+        for i, result in enumerate(results):
+            if result.error:
+                self.logger.warning(f"Failed to spawn walker: {result.error}")
+            else:
+                walker_ids.append(result.actor_id)
+                
+        # Get the actual walker actors
+        walkers = self.world.get_actors(walker_ids)
+        self.npc_walkers.extend(walkers)
+        
+        # If not dynamic, we're done - static walkers don't need controllers
+        if spawn_type != "dynamic" or len(walkers) == 0:
+            return
+            
+        # Now spawn the walker controllers for dynamic walkers
+        controller_batch = []
+        controller_bp = self.world.get_blueprint_library().find('controller.ai.walker')
+        
+        for i, walker in enumerate(walkers):
+            controller_batch.append(carla.command.SpawnActor(controller_bp, carla.Transform(), walker))
+            
+        # Apply the batch and get controller actors
+        results = self.client.apply_batch_sync(controller_batch, True)
+        controller_ids = []
+        
+        for i, result in enumerate(results):
+            if result.error:
+                self.logger.warning(f"Failed to spawn walker controller: {result.error}")
+            else:
+                controller_ids.append(result.actor_id)
+                
+        # Get the actual controller actors
+        controllers = self.world.get_actors(controller_ids)
+        self.walker_controllers.extend(controllers)
+        
+        # Wait for a world tick for proper initialization
+        if self.world.get_settings().synchronous_mode:
+            self.world.tick()
+            
+        # Set walker controller behavior
+        for i, controller in enumerate(controllers):
+            # Set the walker to random walk
+            controller.start()
+            controller.go_to_location(self.world.get_random_location_from_navigation())
+            
+            # Set the max speed
+            if i < len(walker_speed):
+                controller.set_max_speed(walker_speed[i])
+                
+        self.logger.info(f"Successfully spawned {len(controllers)} walker controllers for {len(walkers)} walkers")
 
     def destroy_npcs(self):
-        self.logger.debug(f"Destroying {len(self.npc_vehicles)} vehicles and {len(self.npc_walkers)} walkers.")
+        self.logger.debug(f"Destroying {len(self.npc_vehicles)} vehicles, {len(self.npc_walkers)} walkers, and {len(self.walker_controllers)} controllers.")
         
-        # Stop AI controllers for walkers first
+        # First, stop all walker controllers
         for controller in self.walker_controllers:
             if controller and controller.is_alive:
                 controller.stop()
-                # controller.destroy() # Controller is destroyed when walker is destroyed if attached
-        self.walker_controllers = []
-
-        # Create batches for destruction
-        destroy_commands = []
-        for actor_list in [self.npc_vehicles, self.npc_walkers]: # npc_walkers includes those whose controllers might have failed
-            for actor in actor_list:
-                if actor and actor.is_alive:
-                    destroy_commands.append(carla.command.DestroyActor(actor))
+                
+        # Wait for a tick to let controllers fully stop
+        if self.world.get_settings().synchronous_mode:
+            self.world.tick()
+            
+        # Create batch destroy commands for all actors
+        destroy_actors = []
         
-        if destroy_commands:
+        # First add controllers
+        for controller in self.walker_controllers:
+            if controller and controller.is_alive:
+                destroy_actors.append(controller)
+                
+        # Then add walkers
+        for walker in self.npc_walkers:
+            if walker and walker.is_alive:
+                destroy_actors.append(walker)
+                
+        # Finally add vehicles
+        for vehicle in self.npc_vehicles:
+            if vehicle and vehicle.is_alive:
+                destroy_actors.append(vehicle)
+                
+        # Batch destroy all actors
+        if destroy_actors:
+            destroy_commands = [carla.command.DestroyActor(actor) for actor in destroy_actors]
+            
             try:
-                self.client.apply_batch_sync(destroy_commands, True) # Synchronous destruction
-                self.logger.debug(f"Successfully applied batch destruction for {len(destroy_commands)} NPC actors.")
-            except RuntimeError as e:
-                self.logger.error(f"RuntimeError during NPC batch destruction: {e}", exc_info=True)
-                # Fallback to individual destruction if batch fails
-                self.logger.info("Falling back to individual NPC destruction...")
-                for actor_list in [self.npc_vehicles, self.npc_walkers]:
-                    for actor in actor_list:
+                self.client.apply_batch_sync(destroy_commands, True)
+                self.logger.info(f"Successfully destroyed {len(destroy_commands)} NPC actors.")
+            except Exception as e:
+                self.logger.error(f"Error during NPC destruction: {e}", exc_info=True)
+                
+                # Fallback: try to destroy individually
+                self.logger.info("Falling back to individual destruction...")
+                for actor in destroy_actors:
+                    try:
                         if actor and actor.is_alive:
-                            try:
-                                actor.destroy()
-                            except RuntimeError as e_ind:
-                                self.logger.error(f"Failed to destroy individual NPC {actor.id}: {e_ind}")
+                            actor.destroy()
+                    except Exception as e_ind:
+                        self.logger.error(f"Failed to destroy actor {actor.id}: {e_ind}")
         
+        # Clear our lists
         self.npc_vehicles = []
         self.npc_walkers = []
+        self.walker_controllers = []
+        
         self.logger.debug("NPC destruction complete.")
 
     def set_global_traffic_light_state(self, state: carla.TrafficLightState, duration_ms: Optional[int] = None):
