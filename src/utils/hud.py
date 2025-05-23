@@ -1,6 +1,8 @@
 import pygame
 import os # For OS-specific font names
 import carla # For carla.TrafficLightState
+from typing import Optional, Tuple
+from collections import OrderedDict
 
 class HUD:
     def __init__(self, font_preferences: list, base_font_size: int, fallback_font_size: int):
@@ -15,14 +17,21 @@ class HUD:
         self.line_height = 0
         self.base_font_size = base_font_size
         actual_font_name_main = "Unknown"
-        actual_font_size_main = 0
+        actual_font_size_main = fallback_font_size
         font_to_load = None
 
+        # HUD font loading (commented out debug prints for performance)
         print("HUD: Attempting to load main font...")
+        
+        main_font_loaded = False
+        actual_font_name_main = "Unknown"
+        actual_font_size_main = fallback_font_size
+
         try:
             self.font = pygame.font.Font(pygame.font.match_font(font_preferences[0]), base_font_size)
             actual_font_name_main = font_preferences[0]
             actual_font_size_main = base_font_size
+            main_font_loaded = True
         except:
             self.font = pygame.font.Font(None, fallback_font_size)
             actual_font_name_main = "DefaultPygame"
@@ -138,6 +147,11 @@ class HUD:
         self.boolean_box_true_color = (0, 200, 0) # Green for true
         self.boolean_box_false_color = (150, 0, 0) # Dark Red for false / (100,100,100) for grey outline
 
+        self.world = None # Will be set from PygameVisualizer if needed for server FPS
+        self.clock = None # Will be set from PygameVisualizer for client FPS
+        self.debug_info_cache = OrderedDict() # Cache for data from CarlaEnv
+        self.target_waypoint_location_debug: Optional[Tuple[float, float, float]] = None # Store (x,y,z)
+
     def add_notification(self, text: str, duration_seconds: float = 3.0, color=None):
         if not self.font: return # Should not happen
         font_to_use = self.notification_font if self.notification_font else self.font
@@ -150,6 +164,16 @@ class HUD:
         max_notifications = 5
         if len(self.notifications) > max_notifications:
             self.notifications = self.notifications[-max_notifications:]
+
+    def update_target_waypoint(self, target_waypoint: Optional[carla.Waypoint]):
+        """Updates the target waypoint to be displayed on the HUD."""
+        if target_waypoint and hasattr(target_waypoint, 'transform') and hasattr(target_waypoint.transform, 'location'):
+            loc = target_waypoint.transform.location
+            self.target_waypoint_location_debug = (loc.x, loc.y, loc.z)
+            # self.logger.debug(f"HUD target waypoint updated to: {self.target_waypoint_location_debug}")
+        else:
+            self.target_waypoint_location_debug = None
+            # self.logger.debug("HUD target waypoint cleared.")
 
     def render(self, surface: pygame.Surface, clock: pygame.time.Clock, debug_info: dict):
         """
@@ -321,6 +345,21 @@ class HUD:
             if notification_y_offset < y_offset + 10 : break 
             surface.blit(notif_surface, (x_offset, notification_y_offset))
             if i >= 4 : break
+
+        # Example of how to add target waypoint to the HUD display:
+        # This would typically be in the section where other episode/goal stats are displayed.
+        # Find an appropriate y_offset or panel section.
+        # Assume debug_info_from_env already contains most data, but we can add our cached target here.
+
+        # For instance, if debug_info_from_env has "Dist to Goal (m)", that's good.
+        # If we want to display raw target coords:
+        if self.target_waypoint_location_debug:
+            target_text = f"Target XYZ: ({self.target_waypoint_location_debug[0]:.1f}, {self.target_waypoint_location_debug[1]:.1f}, {self.target_waypoint_location_debug[2]:.1f})"
+            # Find a place to render this, e.g., below "Dist to Goal"
+            # self._render_text_line(display_surface, target_text, x_offset, y_offset_for_target, self.font, self.text_color_light_gray)
+            # For now, we assume "Dist to Goal (m)" is already in debug_info_from_env and sufficient.
+            # If not, CarlaEnv._get_pygame_debug_info would need to calculate and add it based on self.target_waypoint.
+            # Or, HUD can calculate it if it has current vehicle location and target_waypoint_location_debug.
 
     def render_sensor_panel(self, surface: pygame.Surface, sensor_info: dict):
         if not self.font or not sensor_info:
