@@ -3,6 +3,8 @@ import os
 import sys
 import cProfile
 import pstats
+import glob # Added for directory scanning
+from typing import Optional # Added for older Python compatibility
 
 # Configuration
 import config # Assuming src is in PYTHONPATH or current dir
@@ -12,6 +14,39 @@ from utils.logger import Logger as TensorBoardLogger
 from utils.setup_utils import parse_arguments, setup_logging
 from utils.component_initializers import initialize_training_components
 from training.dqn_trainer import DQNTrainer
+
+# Define a base directory for TensorBoard logs, outside model_checkpoints
+TENSORBOARD_BASE_LOG_DIR = "./tensorboard_logs"
+
+def _find_best_model_to_load(base_model_save_dir: str, logger_instance: logging.Logger) -> Optional[str]:
+    """
+    Checks for best_model/best_score.txt directly in base_model_save_dir
+    and returns the path to the best_model directory if found and valid.
+    """
+    logger_instance.info(f"Attempting to find best model in: {base_model_save_dir}")
+    best_score_so_far = -float('inf')
+    path_to_best_model_dir = None
+
+    potential_best_model_dir = os.path.join(base_model_save_dir, "best_model")
+    score_file_path = os.path.join(potential_best_model_dir, "best_score.txt")
+    
+    if os.path.exists(score_file_path) and os.path.isdir(potential_best_model_dir):
+        try:
+            with open(score_file_path, "r") as f:
+                score = float(f.read().strip())
+            logger_instance.debug(f"Found score {score:.2f} in {score_file_path}")
+            if score > best_score_so_far: # Technically, only one 'best_model' dir, so this check is simple
+                best_score_so_far = score
+                path_to_best_model_dir = potential_best_model_dir
+        except (ValueError, IOError) as e:
+            logger_instance.warning(f"Could not read or parse score file at {score_file_path}: {e}")
+    
+    if path_to_best_model_dir:
+        logger_instance.info(f"Determined best model to load: {path_to_best_model_dir} with score {best_score_so_far:.2f}")
+    else:
+        logger_instance.info(f"No best_model directory with a valid best_score.txt found directly in {base_model_save_dir}.")
+        
+    return path_to_best_model_dir
 
 class TrainingRunner:
     """Orchestrates the entire training session lifecycle."""
@@ -38,15 +73,30 @@ class TrainingRunner:
         # Get a logger for the runner module (or a specific name)
         self.main_logger = logging.getLogger(__name__) 
 
+        # Autoload best model if no specific model is requested by user
+        if self.args.load_model_from is None:
+            self.main_logger.info(f"No specific model to load. Attempting to find best model in {self.args.save_dir}...")
+            best_model_path = _find_best_model_to_load(self.args.save_dir, self.main_logger)
+            if best_model_path:
+                self.args.load_model_from = best_model_path
+                self.main_logger.info(f"Autoloading best model from: {os.path.abspath(self.args.load_model_from)}")
+            else:
+                self.main_logger.info("No best model found to autoload. Starting fresh.")
+        
         self.main_logger.info(f"Training session setup initiated by TrainingRunner.")
         self.main_logger.info(f"Log level set to: {self.args.log_level.upper()}")
         self.main_logger.info(f"Using device: {config.DEVICE}")
-        self.main_logger.info(f"Models will be saved in: {os.path.abspath(self.args.save_dir)}")
-        if self.args.load_model_from:
+        self.main_logger.info(f"Model checkpoints will be saved in: {os.path.abspath(self.args.save_dir)}")
+        self.main_logger.info(f"TensorBoard logs will be saved in: {os.path.abspath(TENSORBOARD_BASE_LOG_DIR)}")
+        if self.args.load_model_from: # This will now reflect autoloaded path if one was found
             self.main_logger.info(f"Attempting to load model from: {os.path.abspath(self.args.load_model_from)}")
+        else:
+            self.main_logger.info("No model specified to load, starting fresh.")
 
-        self.main_logger.info("Initializing TensorBoard logger...")
-        self.tb_logger = TensorBoardLogger(log_dir=self.args.save_dir, experiment_name=config.EXPERIMENT_NAME)
+        # Ensure TensorBoard base log directory exists
+        os.makedirs(TENSORBOARD_BASE_LOG_DIR, exist_ok=True)
+        self.tb_logger = TensorBoardLogger(log_dir=TENSORBOARD_BASE_LOG_DIR, experiment_name=config.EXPERIMENT_NAME)
+        self.main_logger.info(f"TensorBoard logger initialized. Logs in: {os.path.abspath(self.tb_logger.run_dir)}")
 
         self.main_logger.info("Initializing core training components...")
         self.env, self.replay_buffer, self.q_network_model, self.agent = initialize_training_components(
