@@ -79,9 +79,9 @@ class PygameVisualizer:
             'display_rear_rgb_camera',
             'display_depth_camera',
             'display_semantic_camera',
-            'lidar',
+            'lidar',            
             'semantic_lidar',
-            'radar'
+            'radar'               
         ]
 
         default_view_display_names = {
@@ -294,11 +294,11 @@ class PygameVisualizer:
         """Create a surface for semantic LIDAR data.
         Supports BOTH raw carla.SemanticLidarMeasurement and pre-processed NumPy arrays with
         shape (N,4) where last column is object_tag."""
-
+        
         # Dark background for contrast
         pixel_array_rgb = np.full((surface_size[1], surface_size[0], 3), [5, 5, 10], dtype=np.uint8)
 
-        if sem_lidar_data is None or len(sem_lidar_data) == 0 or debug_info is None:
+        if sem_lidar_data is None or len(sem_lidar_data) == 0 or debug_info is None: 
             return pygame.surfarray.make_surface(np.transpose(pixel_array_rgb, (1,0,2)))
 
         # Determine input type
