@@ -5,7 +5,7 @@ import gymnasium as gym
 from environments.carla_env import CarlaEnv
 
 # Agent and components
-from agents.dqn_agent import DQNAgent
+from rl_agents.dqn_agent import DQNAgent
 from models.dqn_model import DQNModel
 from replay_buffers.uniform_replay_buffer import UniformReplayBuffer
 
