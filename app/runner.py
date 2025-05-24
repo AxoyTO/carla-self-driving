@@ -6,14 +6,20 @@ import pstats
 import glob # Added for directory scanning
 from typing import Optional # Added for older Python compatibility
 
+# Add project root to Python path for local development
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)  # Go up one level from app/
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 # Configuration
-import config # Assuming src is in PYTHONPATH or current dir
+import app.config as config
 
 # Utilities and Components
 from utils.logger import Logger as TensorBoardLogger
 from utils.setup_utils import parse_arguments, setup_logging
 from utils.component_initializers import initialize_training_components
-from training.dqn_trainer import DQNTrainer
+from app.training.dqn_trainer import DQNTrainer
 
 # Define a base directory for TensorBoard logs, outside model_checkpoints
 TENSORBOARD_BASE_LOG_DIR = "./tensorboard_logs"

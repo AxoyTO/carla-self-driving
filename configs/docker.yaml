@@ -1,0 +1,74 @@
+# Docker Configuration for CARLA RL
+# This file contains Docker-specific settings and environment variables
+
+docker:
+  # Container settings
+  containers:
+    carla_server:
+      image: "carla-rl:latest"
+      memory_limit: "16Gi"
+      cpu_limit: "8"
+      gpu_enabled: true
+      ports:
+        - "2000:2000"
+        - "2001:2001" 
+        - "2002:2002"
+      environment:
+        START_CARLA_SERVER: "true"
+        DISPLAY: ":99"
+        
+    training:
+      image: "carla-rl:latest"
+      memory_limit: "8Gi"
+      cpu_limit: "4"
+      gpu_enabled: true
+      ports:
+        - "6006:6006"
+      environment:
+        START_CARLA_SERVER: "false"
+        CARLA_HOST: "carla-server"
+        CARLA_PORT: "2000"
+        PYTHONPATH: "/app"
+        
+    tensorboard:
+      image: "tensorflow/tensorflow:latest"
+      memory_limit: "2Gi"
+      cpu_limit: "1"
+      ports:
+        - "6006:6006"
+        
+  # Volume mappings
+  volumes:
+    data:
+      host_path: "./data"
+      container_path: "/app/data"
+      
+    models:
+      host_path: "./models"
+      container_path: "/app/models"
+      
+    configs:
+      host_path: "./configs"
+      container_path: "/app/configs"
+      
+    tensorboard_logs:
+      host_path: "./data/tensorboard_logs"
+      container_path: "/logs"
+      
+  # Network settings
+  network:
+    name: "carla-network"
+    driver: "bridge"
+    
+  # Development settings
+  development:
+    hot_reload: true
+    debug_mode: false
+    log_level: "INFO"
+    
+  # Production settings  
+  production:
+    replicas: 1
+    restart_policy: "unless-stopped"
+    health_checks: true
+    monitoring: true 

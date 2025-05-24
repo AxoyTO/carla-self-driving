@@ -1,11 +1,19 @@
 import carla
 import logging
+import os
+import sys
 from typing import Dict, Any, Tuple
+
+# Add project root to Python path for local development
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)  # Go up one level from utils/
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # It might be cleaner to import config and use config.DISCRETE_ACTION_MAP directly,
 # or pass the maps as arguments if this util needs to be ultra-generic.
 # For now, let's assume direct import for simplicity within this project structure.
-import config 
+import app.config as config
 
 logger = logging.getLogger(__name__)
 

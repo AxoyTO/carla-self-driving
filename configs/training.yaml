@@ -1,0 +1,56 @@
+# Training Configuration for CARLA RL
+# This file contains the main training parameters
+
+training:
+  # General training settings
+  total_episodes: 1000
+  max_steps_per_episode: 1500
+  save_interval: 50
+  evaluation_episodes: 10
+  evaluation_interval: 100
+
+  # Learning parameters
+  learning_rate: 0.0001
+  batch_size: 32
+  gamma: 0.99
+  epsilon_start: 1.0
+  epsilon_end: 0.01
+  epsilon_decay: 0.995
+  target_update_frequency: 100
+  replay_buffer_size: 50000
+
+  # Environment settings
+  carla:
+    host: "localhost"
+    port: 2000
+    town: "Town03"
+    synchronous_mode: true
+    fixed_delta_seconds: 0.05
+    time_scale: 1.0
+
+  # Curriculum learning
+  curriculum:
+    enable: true
+    phases:
+      - name: "basic_control"
+        episodes: 200
+        max_steps: 300
+        traffic_vehicles: 0
+        traffic_walkers: 0
+      - name: "simple_navigation"
+        episodes: 300
+        max_steps: 500
+        traffic_vehicles: 5
+        traffic_walkers: 10
+      - name: "complex_scenarios"
+        episodes: 500
+        max_steps: 1500
+        traffic_vehicles: 20
+        traffic_walkers: 30
+
+  # Visualization and logging
+  visualization:
+    enable_pygame: false
+    enable_tensorboard: true
+    log_level: "INFO"
+    save_sensor_data: false 

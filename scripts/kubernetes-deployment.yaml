@@ -1,0 +1,228 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: carla-rl-training
+  labels:
+    app: carla-rl-training
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: carla-rl-training
+  template:
+    metadata:
+      labels:
+        app: carla-rl-training
+    spec:
+      containers:
+      - name: carla-rl-training
+        image: carla-rl:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 6006
+          name: tensorboard
+        env:
+        - name: CARLA_HOST
+          value: "carla-server-service"
+        - name: CARLA_PORT
+          value: "2000"
+        - name: PYTHONPATH
+          value: "/app"
+        - name: START_CARLA_SERVER
+          value: "false"
+        volumeMounts:
+        - name: data-volume
+          mountPath: /app/data
+        - name: models-volume
+          mountPath: /app/models
+        - name: configs-volume
+          mountPath: /app/configs
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"  # Comment for no GPU
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 6006
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 6006
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: carla-data-pvc
+      - name: models-volume
+        persistentVolumeClaim:
+          claimName: carla-models-pvc
+      - name: configs-volume
+        configMap:
+          name: carla-configs
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: carla-server
+  labels:
+    app: carla-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: carla-server
+  template:
+    metadata:
+      labels:
+        app: carla-server
+    spec:
+      containers:
+      - name: carla-server
+        image: carla-rl:latest
+        imagePullPolicy: IfNotPresent
+        command: ["carla-server-only"]
+        ports:
+        - containerPort: 2000
+          name: carla-main
+        - containerPort: 2001
+          name: carla-stream
+        - containerPort: 2002
+          name: carla-secondary
+        env:
+        - name: START_CARLA_SERVER
+          value: "true"
+        - name: CARLA_HEADLESS
+          value: "true"
+        - name: CARLA_PORT
+          value: "2000"
+        - name: DISPLAY
+          value: ":99"
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2"
+          limits:
+            memory: "16Gi"
+            cpu: "8"
+            nvidia.com/gpu: "1"  # GPU recommended for CARLA server
+        livenessProbe:
+          exec:
+            command:
+            - python3
+            - -c
+            - "import carla; carla.Client('localhost', 2000).get_server_version()"
+          initialDelaySeconds: 120
+          periodSeconds: 60
+          timeoutSeconds: 30
+        readinessProbe:
+          exec:
+            command:
+            - python3
+            - -c
+            - "import carla; carla.Client('localhost', 2000).get_server_version()"
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: carla-server-service
+spec:
+  selector:
+    app: carla-server
+  ports:
+  - name: carla-main
+    port: 2000
+    targetPort: 2000
+  - name: carla-stream
+    port: 2001
+    targetPort: 2001
+  - name: carla-secondary
+    port: 2002
+    targetPort: 2002
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: carla-rl-training-service
+spec:
+  selector:
+    app: carla-rl-training
+  ports:
+  - name: tensorboard
+    port: 6006
+    targetPort: 6006
+  type: LoadBalancer  # Change to NodePort or ClusterIP as needed
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: carla-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: standard  # Adjust based on your cluster
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: carla-models-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: standard  # Adjust based on your cluster
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carla-configs
+data:
+  config.yaml: |
+    training:
+      episodes: 1000
+      learning_rate: 0.001
+
+---
+# Optional: Pod Disruption Budget for high availability
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: carla-server-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: carla-server
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: carla-rl-training-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: carla-rl-training 

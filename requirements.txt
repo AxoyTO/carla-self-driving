@@ -1,0 +1,27 @@
+# Core dependencies
+torch>=2.0.0
+numpy>=1.21.0
+gymnasium>=0.29.0
+
+# Configuration management
+pyyaml>=6.0
+
+# Visualization
+pygame>=2.1.0
+open3d>=0.17.0
+matplotlib>=3.5.0
+
+# Data handling and utilities
+pillow>=9.0.0
+opencv-python>=4.5.0
+
+# Logging and monitoring
+tensorboard>=2.10.0
+
+# Development and testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Note: CARLA Python API needs to be installed separately
+# as it requires the CARLA simulator to be installed first
+# See Docker setup for CARLA installation 

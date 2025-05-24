@@ -187,12 +187,10 @@ src-alternative
 /setup/
 
 # Saved Models / Checkpoints
-/checkpoints/
-/saved_models/
-/src/model_checkpoints/
-/src/sensor_data/
-/src/tensorboard_logs/
-/src/sensor_capture/
+models/
+
+# Sensor Data, Tensorboard Logs, etc.
+/data
 
 # Build artifacts
 /build/

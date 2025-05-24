@@ -10,7 +10,16 @@ from typing import Tuple, Optional
 import random # For subsampling in semantic lidar view
 import pygame.gfxdraw  # For anti-aliased circles
 import time # For time-based operations
-import config # Assuming src is in PYTHONPATH or current dir
+import os
+import sys
+
+# Add project root to Python path for local development
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)  # Go up one level from utils/
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+import app.config as config
 
 logger = logging.getLogger(__name__) # Logger for this module
 

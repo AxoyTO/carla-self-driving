@@ -1,13 +1,21 @@
 import logging
 import gymnasium as gym
+import os
+import sys
+
+# Add project root to Python path for local development
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)  # Go up one level from utils/
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # Environment
-from environments.carla_env import CarlaEnv
+from app.environments.carla_env import CarlaEnv
 
 # Agent and components
-from rl_agents.dqn_agent import DQNAgent
-from models.dqn_model import DQNModel
-from replay_buffers.uniform_replay_buffer import UniformReplayBuffer
+from app.rl_agents.dqn_agent import DQNAgent
+from app.models.dqn_model import DQNModel
+from app.replay_buffers.uniform_replay_buffer import UniformReplayBuffer
 
 # Typing
 from typing import Tuple, Dict, Any # For type hints

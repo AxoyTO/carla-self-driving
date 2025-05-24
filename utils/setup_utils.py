@@ -1,6 +1,15 @@
 import argparse
 import logging
-import config # Assuming config.py is in the parent directory (src/)
+import os
+import sys
+
+# Add project root to Python path for local development
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)  # Go up one level from utils/
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+import app.config as config
 
 def parse_arguments():
     """Parses command-line arguments using defaults from config.py."""

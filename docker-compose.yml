@@ -1,0 +1,99 @@
+version: "3.8"
+
+services:
+  carla-rl-training:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: carla-rl:latest
+    container_name: carla-rl-training
+    environment:
+      - START_CARLA_SERVER=false # Training container doesn't start CARLA
+      - CARLA_HOST=carla-server
+      - CARLA_PORT=2000
+      - PYTHONPATH=/app
+    volumes:
+      # Mount data directories for persistence
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./configs:/app/configs
+      # Mount logs for monitoring
+      - ./data/logs:/app/data/logs
+      - ./data/tensorboard_logs:/app/data/tensorboard_logs
+    ports:
+      - "6006:6006" # TensorBoard
+    depends_on:
+      carla-server:
+        condition: service_healthy
+    networks:
+      - carla-network
+    restart: unless-stopped
+    # Uncomment for GPU support
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  carla-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: carla-rl:latest
+    container_name: carla-server
+    command: ["carla-server-only"]
+    environment:
+      - START_CARLA_SERVER=true
+      - CARLA_HEADLESS=true
+      - CARLA_PORT=2000
+      - DISPLAY=:99
+    ports:
+      - "2000:2000" # CARLA main port
+      - "2001:2001" # CARLA streaming port
+      - "2002:2002" # CARLA secondary port
+    networks:
+      - carla-network
+    restart: unless-stopped
+    # Health check to ensure CARLA server is ready
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import carla; carla.Client('localhost', 2000).get_server_version()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    # Uncomment for GPU support (recommended for CARLA server)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  tensorboard:
+    image: tensorflow/tensorflow:latest
+    container_name: carla-tensorboard
+    command: tensorboard --logdir=/logs --host=0.0.0.0 --port=6006
+    volumes:
+      - ./data/tensorboard_logs:/logs
+    ports:
+      - "6007:6006" # Using different port to avoid conflict
+    networks:
+      - carla-network
+    restart: unless-stopped
+
+networks:
+  carla-network:
+    driver: bridge
+
+volumes:
+  carla_data:
+  carla_models:

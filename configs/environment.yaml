@@ -1,0 +1,92 @@
+# Environment Configuration for CARLA RL
+# This file contains CARLA environment and sensor settings
+
+environment:
+  # CARLA connection settings
+  carla_server:
+    host: "localhost"
+    port: 2000
+    timeout: 10.0
+    
+  # World settings
+  world:
+    town: "Town03"
+    synchronous_mode: true
+    fixed_delta_seconds: 0.05
+    time_scale: 1.0
+    weather: "ClearNoon"  # ClearNoon, CloudyNoon, WetNoon, etc.
+    
+  # Vehicle settings
+  vehicle:
+    blueprint_filter: "vehicle.tesla.model3"
+    spawn_point: "random"  # or specific index
+    physics:
+      mass: 1500
+      drag_coefficient: 0.3
+      tire_friction: 3.5
+      
+  # Sensor configuration
+  sensors:
+    # Camera settings
+    rgb_camera:
+      width: 800
+      height: 600
+      fov: 90
+      sensor_tick: 0.05
+      
+    depth_camera:
+      width: 800
+      height: 600
+      fov: 90
+      sensor_tick: 0.05
+      
+    semantic_camera:
+      width: 800
+      height: 600
+      fov: 90
+      sensor_tick: 0.05
+      
+    # LIDAR settings
+    lidar:
+      channels: 32
+      range: 100
+      points_per_second: 100000
+      rotation_frequency: 10
+      upper_fov: 10
+      lower_fov: -30
+      sensor_tick: 0.05
+      
+    # RADAR settings
+    radar:
+      horizontal_fov: 30
+      vertical_fov: 30
+      range: 100
+      points_per_second: 1500
+      sensor_tick: 0.05
+      
+  # Traffic settings
+  traffic:
+    vehicles:
+      number: 20
+      autopilot: true
+      spawn_radius: 50
+      
+    pedestrians:
+      number: 30
+      crossing_factor: 0.1
+      speed_factor: 1.0
+      
+  # Action space
+  actions:
+    type: "discrete"  # discrete or continuous
+    discrete_actions:
+      - "IDLE"
+      - "STRAIGHT"
+      - "LEFT"
+      - "RIGHT"
+      - "STRAIGHT_ACCELERATE"
+      - "LEFT_ACCELERATE"
+      - "RIGHT_ACCELERATE"
+      - "BRAKE"
+      - "BRAKE_LEFT"
+      - "BRAKE_RIGHT" 

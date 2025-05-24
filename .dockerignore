@@ -1,0 +1,60 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.tox
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.pytest_cache/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+*.md
+docs/
+
+# Data and model directories (they will be mounted as volumes)
+data/
+models/model_checkpoints/
+data/tensorboard_logs/
+data/sensor_capture/
+
+# Old src directory (we're using app/ now)
+src/
+
+# Paper and setup directories  
+Paper/
+setup/
+static/
+
+# Docker files (no need to copy into container)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store 

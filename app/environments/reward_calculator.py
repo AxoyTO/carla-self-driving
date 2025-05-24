@@ -120,65 +120,67 @@ class RewardCalculator:
 
     def _calculate_lane_keeping_rewards_penalties(self, vehicle, current_location, carla_map, lane_invasion_event) -> Tuple[float, bool]:
         reward = 0.0
-        on_sidewalk_flag = False
+        on_sidewalk_flag = False # This will be the definitive flag for sidewalk incursion for this step
+
         if not carla_map:
             return reward, on_sidewalk_flag
 
-        wp = carla_map.get_waypoint(current_location, project_to_road=True, lane_type=carla.LaneType.Driving)
+        # 1. Prioritize Lane Invasion for Curb Detection
+        if lane_invasion_event:
+            for marking in lane_invasion_event.crossed_lane_markings:
+                if marking.type == carla.LaneMarkingType.Curb:
+                    reward += self.PENALTY_SIDEWALK  # Apply the strong sidewalk penalty
+                    on_sidewalk_flag = True
+                    logger.debug(f"Penalty for CURB crossing via lane_invasion_event: {self.PENALTY_SIDEWALK}")
+                    break # Curb crossing is definitive for sidewalk penalty this step
         
-        if wp and wp.transform: 
-            if wp.lane_type != carla.LaneType.Driving: 
-                reward += self.PENALTY_OFFROAD
-                # Check for sidewalk if off-road (e.g. on grass leading to curb)
-                if lane_invasion_event:
-                    for marking in lane_invasion_event.crossed_lane_markings:
-                        if marking.type == carla.LaneMarkingType.Curb:
-                            reward += self.PENALTY_SIDEWALK # Additional penalty for sidewalk
-                            on_sidewalk_flag = True
-                            logger.debug(f"Penalty for off-road curb crossing (sidewalk): {marking.type}")
-                            break # Sidewalk is critical
-            else: # On a driving lane
-                # Lane Centering
-                max_dev = wp.lane_width / 1.8 # Stricter centering
-                lat_dist = current_location.distance(wp.transform.location) 
-                reward += self.LANE_CENTERING_REWARD_FACTOR * (1.0 - min(lat_dist / max_dev, 1.0)**2)
+        # 2. If no curb was hit, check for direct sidewalk lane type
+        if not on_sidewalk_flag: # Only if a curb wasn't already processed
+            current_waypoint_at_location = carla_map.get_waypoint(current_location, project_to_road=False) 
+            if current_waypoint_at_location and current_waypoint_at_location.lane_type == carla.LaneType.Sidewalk:
+                reward += self.PENALTY_SIDEWALK # Apply penalty
+                on_sidewalk_flag = True      # Set flag
+                logger.debug(f"Penalty for being directly on SIDEWALK lane type (no curb event): {self.PENALTY_SIDEWALK}")
 
-                # Lane Orientation
-                v_fwd = vehicle.get_transform().get_forward_vector()
-                l_fwd = wp.transform.get_forward_vector()
-                # Ensure vectors are 2D (x, y) for heading calculation
-                v_fwd_2d = np.array([v_fwd.x, v_fwd.y])
-                l_fwd_2d = np.array([l_fwd.x, l_fwd.y])
-                norm_v = np.linalg.norm(v_fwd_2d)
-                norm_l = np.linalg.norm(l_fwd_2d)
+        # 3. If still not flagged for sidewalk, proceed with general off-road and lane keeping
+        if not on_sidewalk_flag:
+            projected_driving_wp = carla_map.get_waypoint(current_location, project_to_road=True, lane_type=carla.LaneType.Driving)
+            if projected_driving_wp and projected_driving_wp.transform:
+                if projected_driving_wp.lane_type != carla.LaneType.Driving: 
+                    reward += self.PENALTY_OFFROAD # General offroad if not on sidewalk
+                    logger.debug(f"Penalty for general OFFROAD (projected to non-driving): {self.PENALTY_OFFROAD}")
+                else: # On a driving lane (by projection)
+                    # Lane Centering
+                    max_dev = projected_driving_wp.lane_width / 1.8 
+                    lat_dist = current_location.distance(projected_driving_wp.transform.location) 
+                    reward += self.LANE_CENTERING_REWARD_FACTOR * (1.0 - min(lat_dist / max_dev, 1.0)**2)
 
-                if norm_v > 1e-4 and norm_l > 1e-4: # Avoid division by zero
-                    dot_product = np.dot(v_fwd_2d, l_fwd_2d) / (norm_v * norm_l)
-                    angle_d = math.degrees(math.acos(np.clip(dot_product, -1.0, 1.0)))
-                    if angle_d > 20.0: # Penalize large deviations
-                        reward -= self.LANE_ORIENTATION_PENALTY_FACTOR * (angle_d / 90.0) # Scale penalty by deviation
-
-                # Solid Lane Crossing & Sidewalk via Lane Invasion (when on a driving lane)
-                if lane_invasion_event:
-                    for marking in lane_invasion_event.crossed_lane_markings:
-                        if marking.type in [carla.LaneMarkingType.Solid, carla.LaneMarkingType.SolidSolid]:
-                            reward += self.PENALTY_SOLID_LANE_CROSS
-                            logger.debug(f"Penalty for crossing solid lane: {marking.type}")
-                            # Don't break, sidewalk might be more severe or also present
-                        elif marking.type == carla.LaneMarkingType.Curb:
-                            reward += self.PENALTY_SIDEWALK
-                            on_sidewalk_flag = True
-                            logger.debug(f"Penalty for crossing curb (sidewalk): {marking.type}")
-                            # break # Sidewalk is critical, prioritize this penalty
-        else: # Off-road (wp is None or wp.lane_type is not Driving)
-            reward += self.PENALTY_OFFROAD 
-            if lane_invasion_event: # Check for sidewalk even if broadly off-road
-                for marking in lane_invasion_event.crossed_lane_markings:
-                    if marking.type == carla.LaneMarkingType.Curb:
-                        reward += self.PENALTY_SIDEWALK # Additional penalty for sidewalk
-                        on_sidewalk_flag = True
-                        logger.debug(f"Penalty for general off-road curb crossing (sidewalk): {marking.type}")
-                        break # Sidewalk is critical
+                    # Lane Orientation
+                    v_fwd = vehicle.get_transform().get_forward_vector()
+                    l_fwd = projected_driving_wp.transform.get_forward_vector()
+                    v_fwd_2d = np.array([v_fwd.x, v_fwd.y])
+                    l_fwd_2d = np.array([l_fwd.x, l_fwd.y])
+                    norm_v = np.linalg.norm(v_fwd_2d)
+                    norm_l = np.linalg.norm(l_fwd_2d)
+                    if norm_v > 1e-4 and norm_l > 1e-4:
+                        dot_product = np.dot(v_fwd_2d, l_fwd_2d) / (norm_v * norm_l)
+                        angle_d = math.degrees(math.acos(np.clip(dot_product, -1.0, 1.0)))
+                        if angle_d > 20.0:
+                            reward -= self.LANE_ORIENTATION_PENALTY_FACTOR * (angle_d / 90.0)
+                    
+                    # Solid Lane Crossing (only if on driving lane and not already a sidewalk event)
+                    if lane_invasion_event: # Re-check for other markings if on driving lane
+                        for marking in lane_invasion_event.crossed_lane_markings:
+                            # Check for solid lines, but ensure not to process .Curb again here if it was missed above
+                            # (though it shouldn't be if the first block for curb detection ran)
+                            if marking.type in [carla.LaneMarkingType.Solid, carla.LaneMarkingType.SolidSolid]:
+                                reward += self.PENALTY_SOLID_LANE_CROSS
+                                logger.debug(f"Penalty for crossing SOLID lane: {self.PENALTY_SOLID_LANE_CROSS}")
+                                # Don't break, could be multiple solid lines or other non-curb events.
+            else: # Cannot project to a driving lane (very off-road) AND not on sidewalk
+                reward += self.PENALTY_OFFROAD 
+                logger.debug(f"Penalty for general OFFROAD (no projection): {self.PENALTY_OFFROAD}")
+        
         return reward, on_sidewalk_flag
 
     def _calculate_stuck_reversing_penalty(self, current_speed_mps, is_reversing_action, intended_reverse_action, reward_type) -> float:

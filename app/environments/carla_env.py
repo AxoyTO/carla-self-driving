@@ -178,6 +178,7 @@ class CarlaEnv(BaseEnv):
 
         self.global_plan: List[Tuple[carla.Waypoint, Any]] = [] 
         self.current_global_plan_segment_index = 0
+        self.global_plan_ended_logged = False
 
     def _define_observation_space(self) -> spaces.Dict:
         obs_spaces = OrderedDict()
@@ -357,6 +358,7 @@ class CarlaEnv(BaseEnv):
         # Generate global plan to the curriculum-defined final_destination_waypoint
         self.global_plan = []
         self.current_global_plan_segment_index = 0
+        self.global_plan_ended_logged = False
         if self.grp and start_spawn_transform and final_destination_waypoint:
             try:
                 self.global_plan = self.grp.trace_route(
@@ -447,7 +449,9 @@ class CarlaEnv(BaseEnv):
                     # self.logger.debug(f"Advanced to next segment in global plan. New target: {self.target_waypoint.transform.location}")
                     if self.visualizer: self.visualizer.update_goal_waypoint_debug(self.target_waypoint)
                 else:
-                    self.logger.info("Reached end of global plan segments.")
+                    if not self.global_plan_ended_logged:
+                        self.logger.info("Reached end of global plan segments.")
+                        self.global_plan_ended_logged = True
                     # self.target_waypoint will remain the last one, _check_done handles final goal
 
         self.collision_flag_debug, self.on_sidewalk_debug_flag, self.proximity_penalty_flag_debug = False, False, False
