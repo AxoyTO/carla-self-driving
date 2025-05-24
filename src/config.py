@@ -4,6 +4,7 @@ import os
 # --- General Settings ---
 EXPERIMENT_NAME = "dqn_carla_agent"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+CARLA_ROOT = "/opt/carla-simulator" # Default CARLA installation path
 
 # --- Argument Parser Default Values ---
 # These can be overridden by command-line arguments
@@ -116,6 +117,11 @@ REWARD_CALC_VEHICLE_STOPPED_SPEED_THRESHOLD = 0.1  # m/s
 REWARD_CALC_PROXIMITY_THRESHOLD_VEHICLE = 4.0  # meters
 REWARD_CALC_PENALTY_PROXIMITY_VEHICLE_FRONT = -15.0
 
+# Steering Behavior
+REWARD_CALC_PENALTY_EXCESSIVE_STEER_BASE = -0.5 # Base penalty factor for high steering on straights
+REWARD_CALC_STEER_THRESHOLD_STRAIGHT = 0.1  # Steer magnitude above which penalty applies on straights
+REWARD_CALC_MIN_SPEED_FOR_STEER_PENALTY_KMH = 10.0 # Only apply steer penalty above this speed
+
 # New: Penalty for crossing a solid lane marking
 REWARD_CALC_PENALTY_SOLID_LANE_CROSS = -40.0 # Adjusted penalty for crossing solid lines
 
@@ -179,52 +185,75 @@ NUM_DISCRETE_ACTIONS = len(DISCRETE_ACTION_MAP) # Should be 6
 
 # --- CarlaEnv Default Curriculum Phases ---
 CARLA_DEFAULT_CURRICULUM_PHASES = [
-    {"name": "Phase0_BasicControl_Straight", "episodes": 30, 
+    {"name": "Phase0_BasicControl_Straight", "episodes": 200, 
      "reward_config": "phase0", "spawn_config": "fixed_straight",
-     "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"},
-     "allow_reverse": False, "max_steps": 500},
+     "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"}, # No traffic initially
+     "allow_reverse": False, "max_steps": 300, # Shorter episodes for basic task
+     "phase0_target_distance_m": 75.0, # Slightly longer straight
+     "phase0_spawn_point_idx": 41 # Example: A known good straight spawn point in Town03
+     },
 
-    {"name": "Phase0_BasicControl_SimpleTurns", "episodes": 50, 
+    {"name": "Phase0_BasicControl_SimpleTurns", "episodes": 300, 
      "reward_config": "phase0", "spawn_config": "fixed_simple_turns", 
      "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"},
      "require_stop_at_goal": True,
-     "allow_reverse": False, "max_steps": 750},
+     "allow_reverse": False, "max_steps": 500 
+    },
 
-    {"name": "Phase1_LaneFollowing", "episodes": 100, 
+    {"name": "Phase1_LaneFollowing_NoTraffic", "episodes": 500, 
      "reward_config": "standard", "spawn_config": "random_gentle_curves", 
      "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"},
-     "require_stop_at_goal": True,
-     "allow_reverse": False, "max_steps": 1000},
-     
-    {"name": "Phase1_5_ReverseManeuvers", "episodes": 100, 
-     "reward_config": "standard", "spawn_config": "random_gentle_curves", # Consider specific spawn for reverse
+     "require_stop_at_goal": False, # Focus on continuous driving
+     "allow_reverse": False, "max_steps": 1000
+    },
+
+    {"name": "Phase2_LaneFollowing_LightStaticTraffic", "episodes": 750, 
+     "reward_config": "standard", "spawn_config": "random_urban", # More varied routes
+     "traffic_config": {"num_vehicles": 20, "num_walkers": 10, "type": "static"}, # Introduce static obstacles
+     "require_stop_at_goal": False,
+     "allow_reverse": False, "max_steps": 1200
+    },
+    
+    {"name": "Phase2_5_ReverseManeuvers", "episodes": 250, 
+     "reward_config": "standard", "spawn_config": "random_short_segment_for_reverse", # Custom spawn for reversing practice
      "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"},
-     "require_stop_at_goal": True,
-     "allow_reverse": True, "max_steps": 700},
+     "require_stop_at_goal": True, # Goal is to park or similar
+     "allow_reverse": True, "max_steps": 400 # Shorter, focused episodes
+    },
 
-    {"name": "Phase2_NavigateStaticObstacles", "episodes": 300, 
-     "reward_config": "standard", "spawn_config": "random_urban", 
-     "traffic_config": {"num_vehicles": 10, "num_walkers": 0, "type": "static"},
-     "require_stop_at_goal": True,
-     "allow_reverse": True, "max_steps": 1500},
-
-    {"name": "Phase3_TrafficLights", "episodes": 500, 
+    {"name": "Phase3_TrafficLights_NoDynamicTraffic", "episodes": 600, 
      "reward_config": "standard", "spawn_config": "random_urban_with_traffic_lights", 
-     "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"},
-     "require_stop_at_goal": True,
-     "allow_reverse": True, "max_steps": 2000},
+     "traffic_config": {"num_vehicles": 15, "num_walkers": 10, "type": "static"}, # Static obstacles for complexity
+     "require_stop_at_goal": True, 
+     "allow_reverse": False, "max_steps": 1500
+    },
 
-    {"name": "Phase4_LightDynamicTraffic", "episodes": 1000, 
-     "reward_config": "standard", "spawn_config": "random_urban_full", 
-     "traffic_config": {"num_vehicles": 15, "num_walkers": 0, "type": "dynamic"},
-     "require_stop_at_goal": True,
-     "allow_reverse": True, "max_steps": 2500},
+    {"name": "Phase4_LightDynamicTraffic_Intersections", "episodes": 1000, 
+     "reward_config": "standard", "spawn_config": "random_urban_with_traffic_lights", # Ensures intersections
+     "traffic_config": {"num_vehicles": 25, "num_walkers": 15, "type": "dynamic"},
+     "require_stop_at_goal": False,
+     "allow_reverse": True, "max_steps": 2000
+    },
 
-    {"name": "Phase5_ComplexDriving", "episodes": 3000, 
+    {"name": "Phase5_ComplexUrbanDriving", "episodes": 1500, 
      "reward_config": "standard", "spawn_config": "random_urban_full", 
-     "traffic_config": {"num_vehicles": 30, "num_walkers": 20, "type": "dynamic"},
-     "require_stop_at_goal": True,
-     "allow_reverse": True, "max_steps": 3000}
+     "traffic_config": {"num_vehicles": 40, "num_walkers": 30, "type": "dynamic"},
+     "require_stop_at_goal": False,
+     "allow_reverse": True, "max_steps": 2500
+    },
+
+    {"name": "Phase6_DenseTrafficAndPedestrians", "episodes": 2000, # Longest phase for mastery
+     "reward_config": "standard", 
+     "spawn_config": "random_urban_full", # Most challenging spawns
+     "traffic_config": {
+         "num_vehicles": 60, 
+         "num_walkers": 40,  
+         "type": "dynamic_traffic_light_aware", # Ensure TM uses TL info if possible
+     },
+     "require_stop_at_goal": False,
+     "allow_reverse": True, 
+     "max_steps": 3000
+    }
 ]
 
 def get_config_dict(config_module):
