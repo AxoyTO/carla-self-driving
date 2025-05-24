@@ -36,7 +36,7 @@ def parse_arguments():
     parser.add_argument("--save-dir", type=str, default=config.SAVE_DIR,
                         help=f"Base directory to save models and logs (default: {config.SAVE_DIR}).")
     parser.add_argument("--load-model-from", type=str, default=config.LOAD_MODEL_FROM,
-                        help="Directory to load a pre-trained model from (e.g., ./model_checkpoints/run_ID). Overrides starting fresh.")
+                        help="Directory to load a pre-trained model from (e.g., ./models/model_checkpoints/run_ID). Overrides starting fresh.")
     parser.add_argument("--save-interval", type=int, default=config.SAVE_INTERVAL,
                         help=f"Save a checkpoint every N episodes (default: {config.SAVE_INTERVAL}).")
 

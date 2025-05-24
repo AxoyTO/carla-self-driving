@@ -1,260 +1,210 @@
 import torch
 import os
+import sys
+from typing import Dict, Any, Optional
 
-# --- General Settings ---
-EXPERIMENT_NAME = "dqn_carla_agent"
+# Add project root to Python path for imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)  # Go up one level from app/
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from utils.config_loader import ConfigLoader
+
+# Initialize config loader with correct path to configs directory
+# The configs directory is at the project root level, not relative to app/
+config_dir = os.path.join(project_root, "configs")
+config_loader = ConfigLoader(config_dir)
+
+# Load main configuration
+_main_config = config_loader.load_config("config")
+
+# --- Dynamic/Computed Settings ---
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-CARLA_ROOT = "/opt/carla-simulator" # Default CARLA installation path
 
-# --- Argument Parser Default Values ---
-# These can be overridden by command-line arguments
-LOG_LEVEL = "INFO"
-ENABLE_PYGAME_DISPLAY = False
-PYGAME_WIDTH = 1920
-PYGAME_HEIGHT = 1080
-DISABLE_SENSOR_VIEWS = False # Default to showing all views
-SAVE_DIR = "./model_checkpoints" # Base directory for saving all runs
-LOAD_MODEL_FROM = None # e.g., "./model_checkpoints/run_xxxxxxxx_xxxxxx"
-SAVE_INTERVAL = 50 # episodes
-EVAL_INTERVAL = 25 # training episodes
-NUM_EVAL_EPISODES = 5
-SAVE_SENSOR_DATA = False
-SENSOR_DATA_SAVE_PATH = "./sensor_capture"
-SENSOR_SAVE_INTERVAL = 100 # steps
-NUM_EPISODES = 1000 # Total training episodes
-MAX_STEPS_PER_EPISODE = 1000 # Max steps per training episode
-EPSILON_START = 1.0
-EPSILON_END = 0.01
-EPSILON_DECAY = 0.995
-EPSILON_EVAL = 0.01 # Epsilon for evaluation phase
+# --- Configuration Access Functions ---
+def get_config_value(key_path: str, default: Any = None) -> Any:
+    """Get a configuration value using dot notation."""
+    return config_loader._get_nested_value(_main_config, key_path, default)
 
-# --- Environment Parameters (CarlaEnv) ---
-ENV_HOST = 'localhost'
-ENV_PORT = 2000
-ENV_TOWN = 'Town03'
-ENV_TIMESTEP = 0.10  # seconds, for synchronous mode
-ENV_TIME_SCALE = 1.0  # Time scale factor (1.0 = normal speed, 2.0 = 2x speed, etc.)
-IMAGE_WIDTH = 84
-IMAGE_HEIGHT = 84
-# NUM_DISCRETE_ACTIONS is derived by CarlaEnv based on discrete_actions mapping
+def get_general_config(key: str, default: Any = None) -> Any:
+    """Get a general configuration value."""
+    return get_config_value(f"general.{key}", default)
 
-# --- Agent Parameters (DQNAgent & DQNModel) ---
-# observation_space and action_space are determined by the environment
-LEARNING_RATE = 1e-4
-GAMMA = 0.99  # Discount factor
-TAU = 1e-3  # For soft update of target network
-REPLAY_BUFFER_CAPACITY = 100000
-BATCH_SIZE = 64
-UPDATE_EVERY = 4  # Steps
+def get_default_config(key: str, default: Any = None) -> Any:
+    """Get a default configuration value."""
+    return get_config_value(f"defaults.{key}", default)
 
-# --- Trainer Parameters (DQNTrainer) ---
-# Most trainer parameters are passed via args or derived
+def get_environment_config(key: str, default: Any = None) -> Any:
+    """Get an environment configuration value."""
+    return get_config_value(f"environment.{key}", default)
 
-# --- Derived/Runtime Configurations (Managed by main.py or trainer.py) ---
-# These are not "configs" in the sense of being user-settable defaults here,
-# but rather variables that will be determined at runtime.
-# RUN_SPECIFIC_SAVE_DIR: Set in main.py, e.g., os.path.join(SAVE_DIR, f"run_{timestamp}")
-# CURRENT_BEST_MODEL_DIR: Set in main.py, e.g., os.path.join(RUN_SPECIFIC_SAVE_DIR, "best_model")
+def get_agent_config(key: str, default: Any = None) -> Any:
+    """Get an agent configuration value."""
+    return get_config_value(f"agent.{key}", default)
 
+def get_reward_config(key: str, default: Any = None) -> Any:
+    """Get a reward calculator configuration value."""
+    return get_config_value(f"reward_calculator.{key}", default)
+
+def get_action_config(key: str, default: Any = None) -> Any:
+    """Get an action configuration value."""
+    return get_config_value(f"actions.{key}", default)
+
+def get_curriculum_config(key: str, default: Any = None) -> Any:
+    """Get a curriculum configuration value."""
+    return get_config_value(f"curriculum.{key}", default)
+
+# --- Exposed Configuration Values (for backward compatibility) ---
+# General Settings
+EXPERIMENT_NAME = get_general_config("experiment_name", "dqn_carla_agent")
+CARLA_ROOT = get_general_config("carla_root", "/opt/carla-simulator")
+
+# Argument Parser Default Values
+LOG_LEVEL = get_default_config("log_level", "INFO")
+ENABLE_PYGAME_DISPLAY = get_default_config("enable_pygame_display", False)
+PYGAME_WIDTH = get_default_config("pygame_width", 1920)
+PYGAME_HEIGHT = get_default_config("pygame_height", 1080)
+DISABLE_SENSOR_VIEWS = get_default_config("disable_sensor_views", False)
+
+# Fix the SAVE_DIR to use absolute path based on project root
+_save_dir_relative = get_default_config("save_dir", "./models/model_checkpoints")
+if _save_dir_relative.startswith('./'):
+    # Convert relative path to absolute path based on project root
+    SAVE_DIR = os.path.join(project_root, _save_dir_relative[2:])  # Remove './' prefix
+else:
+    SAVE_DIR = _save_dir_relative
+
+LOAD_MODEL_FROM = get_default_config("load_model_from", None)
+SAVE_INTERVAL = get_default_config("save_interval", 50)
+EVAL_INTERVAL = get_default_config("eval_interval", 25)
+NUM_EVAL_EPISODES = get_default_config("num_eval_episodes", 5)
+
+# Fix sensor data save path similarly
+_sensor_data_path_relative = get_default_config("sensor_data_save_path", "./data/sensor_capture")
+if _sensor_data_path_relative.startswith('./'):
+    SENSOR_DATA_SAVE_PATH = os.path.join(project_root, _sensor_data_path_relative[2:])
+else:
+    SENSOR_DATA_SAVE_PATH = _sensor_data_path_relative
+
+SAVE_SENSOR_DATA = get_default_config("save_sensor_data", False)
+SENSOR_SAVE_INTERVAL = get_default_config("sensor_save_interval", 100)
+NUM_EPISODES = get_default_config("num_episodes", 1000)
+MAX_STEPS_PER_EPISODE = get_default_config("max_steps_per_episode", 1000)
+EPSILON_START = get_default_config("epsilon_start", 1.0)
+EPSILON_END = get_default_config("epsilon_end", 0.01)
+EPSILON_DECAY = get_default_config("epsilon_decay", 0.995)
+EPSILON_EVAL = get_default_config("epsilon_eval", 0.01)
+
+# Environment Parameters
+ENV_HOST = get_environment_config("host", "localhost")
+ENV_PORT = get_environment_config("port", 2000)
+ENV_TOWN = get_environment_config("town", "Town03")
+ENV_TIMESTEP = get_environment_config("timestep", 0.10)
+ENV_TIME_SCALE = get_environment_config("time_scale", 1.0)
+IMAGE_WIDTH = get_environment_config("image_width", 84)
+IMAGE_HEIGHT = get_environment_config("image_height", 84)
+
+# Agent Parameters
+LEARNING_RATE = get_agent_config("learning_rate", 1e-4)
+GAMMA = get_agent_config("gamma", 0.99)
+TAU = get_agent_config("tau", 1e-3)
+REPLAY_BUFFER_CAPACITY = get_agent_config("replay_buffer_capacity", 100000)
+BATCH_SIZE = get_agent_config("batch_size", 64)
+UPDATE_EVERY = get_agent_config("update_every", 4)
+
+# Sensor Default Parameters
+CARLA_DEFAULT_IMAGE_WIDTH = get_environment_config("camera.default_width", 84)
+CARLA_DEFAULT_IMAGE_HEIGHT = get_environment_config("camera.default_height", 84)
+
+CARLA_DEFAULT_LIDAR_CHANNELS = get_environment_config("lidar.default_channels", 32)
+CARLA_DEFAULT_LIDAR_RANGE = get_environment_config("lidar.default_range", 50.0)
+CARLA_DEFAULT_LIDAR_POINTS_PER_SECOND = get_environment_config("lidar.default_points_per_second", 120000)
+CARLA_DEFAULT_LIDAR_ROTATION_FREQUENCY = get_environment_config("lidar.default_rotation_frequency", 10.0)
+CARLA_DEFAULT_LIDAR_UPPER_FOV = get_environment_config("lidar.default_upper_fov", 15.0)
+CARLA_DEFAULT_LIDAR_LOWER_FOV = get_environment_config("lidar.default_lower_fov", -25.0)
+CARLA_PROCESSED_LIDAR_NUM_POINTS = get_environment_config("lidar.processed_num_points", 720)
+
+CARLA_DEFAULT_RADAR_RANGE = get_environment_config("radar.default_range", 70.0)
+CARLA_DEFAULT_RADAR_HORIZONTAL_FOV = get_environment_config("radar.default_horizontal_fov", 30.0)
+CARLA_DEFAULT_RADAR_VERTICAL_FOV = get_environment_config("radar.default_vertical_fov", 10.0)
+CARLA_DEFAULT_RADAR_POINTS_PER_SECOND = get_environment_config("radar.default_points_per_second", 1500)
+CARLA_PROCESSED_RADAR_MAX_DETECTIONS = get_environment_config("radar.processed_max_detections", 20)
+
+# Reward Calculator Parameters
+REWARD_CALC_PENALTY_COLLISION = get_reward_config("penalty_collision", -1000.0)
+REWARD_CALC_REWARD_GOAL_REACHED = get_reward_config("reward_goal_reached", 300.0)
+REWARD_CALC_PENALTY_PER_STEP = get_reward_config("penalty_per_step", -0.1)
+REWARD_CALC_REWARD_DISTANCE_FACTOR = get_reward_config("reward_distance_factor", 1.0)
+REWARD_CALC_WAYPOINT_REACHED_THRESHOLD = get_reward_config("waypoint_reached_threshold", 5.0)
+REWARD_CALC_TARGET_SPEED_KMH_DEFAULT = get_reward_config("target_speed_kmh_default", 40.0)
+
+REWARD_CALC_TARGET_SPEED_REWARD_FACTOR = get_reward_config("target_speed_reward_factor", 0.5)
+REWARD_CALC_TARGET_SPEED_STD_DEV_KMH = get_reward_config("target_speed_std_dev_kmh", 10.0)
+REWARD_CALC_MIN_FORWARD_SPEED_THRESHOLD = get_reward_config("min_forward_speed_threshold", 0.1)
+REWARD_CALC_PENALTY_STUCK_OR_REVERSING_BASE = get_reward_config("penalty_stuck_or_reversing_base", -0.5)
+
+REWARD_CALC_LANE_CENTERING_REWARD_FACTOR = get_reward_config("lane_centering_reward_factor", 0.2)
+REWARD_CALC_LANE_ORIENTATION_PENALTY_FACTOR = get_reward_config("lane_orientation_penalty_factor", 0.1)
+REWARD_CALC_PENALTY_OFFROAD = get_reward_config("penalty_offroad", -50.0)
+
+REWARD_CALC_PENALTY_TRAFFIC_LIGHT_RED_MOVING = get_reward_config("penalty_traffic_light_red_moving", -75.0)
+REWARD_CALC_REWARD_TRAFFIC_LIGHT_GREEN_PROCEED = get_reward_config("reward_traffic_light_green_proceed", 5.0)
+REWARD_CALC_REWARD_TRAFFIC_LIGHT_STOPPED_AT_RED = get_reward_config("reward_traffic_light_stopped_at_red", 15.0)
+REWARD_CALC_VEHICLE_STOPPED_SPEED_THRESHOLD = get_reward_config("vehicle_stopped_speed_threshold", 0.1)
+
+REWARD_CALC_PROXIMITY_THRESHOLD_VEHICLE = get_reward_config("proximity_threshold_vehicle", 4.0)
+REWARD_CALC_PENALTY_PROXIMITY_VEHICLE_FRONT = get_reward_config("penalty_proximity_vehicle_front", -15.0)
+
+REWARD_CALC_PENALTY_EXCESSIVE_STEER_BASE = get_reward_config("penalty_excessive_steer_base", -0.5)
+REWARD_CALC_STEER_THRESHOLD_STRAIGHT = get_reward_config("steer_threshold_straight", 0.1)
+REWARD_CALC_MIN_SPEED_FOR_STEER_PENALTY_KMH = get_reward_config("min_speed_for_steer_penalty_kmh", 10.0)
+
+REWARD_CALC_PENALTY_SOLID_LANE_CROSS = get_reward_config("penalty_solid_lane_cross", -40.0)
+REWARD_CALC_PENALTY_SIDEWALK = get_reward_config("penalty_sidewalk", -800.0)
+STOP_AT_GOAL_SPEED_THRESHOLD = get_reward_config("stop_at_goal_speed_threshold", 0.2)
+
+# Phase 0 Specific Adjustments
+REWARD_CALC_PHASE0_PENALTY_PER_STEP = get_reward_config("phase0.penalty_per_step", -0.01)
+REWARD_CALC_PHASE0_DISTANCE_FACTOR_MULTIPLIER = get_reward_config("phase0.distance_factor_multiplier", 2.5)
+REWARD_CALC_PHASE0_GOAL_REWARD_MULTIPLIER = get_reward_config("phase0.goal_reward_multiplier", 1.5)
+REWARD_CALC_PHASE0_STUCK_PENALTY_BASE = get_reward_config("phase0.stuck_penalty_base", -0.1)
+REWARD_CALC_PHASE0_STUCK_MULTIPLIER_STUCK = get_reward_config("phase0.stuck_multiplier_stuck", 1.0)
+REWARD_CALC_PHASE0_STUCK_MULTIPLIER_REVERSING = get_reward_config("phase0.stuck_multiplier_reversing", 2.0)
+REWARD_CALC_PHASE0_OFFROAD_PENALTY = get_reward_config("phase0.offroad_penalty", -10.0)
+REWARD_CALC_PHASE0_OFFROAD_NO_WAYPOINT_MULTIPLIER = get_reward_config("phase0.offroad_no_waypoint_multiplier", 1.5)
+
+# Action Mapping
+DISCRETE_ACTION_MAP = get_action_config("discrete_action_map", {})
+DISCRETE_ACTION_MAP_NO_REVERSE = get_action_config("discrete_action_map_no_reverse", {})
+NUM_DISCRETE_ACTIONS = len(DISCRETE_ACTION_MAP)
+
+# Curriculum Phases
+CARLA_DEFAULT_CURRICULUM_PHASES = get_curriculum_config("default_phases", [])
 
 # --- Helper function to update config from args ---
 def update_config_from_args(config_module, args):
     """
-    Updates the configuration module\'s attributes with values from argparse.Namespace.
-    Only updates if the attribute exists in the config_module and the args value is not None
-    (for arguments that might not be set).
+    Updates the configuration module's attributes with values from argparse.Namespace.
+    Only updates if the attribute exists in the config_module and the args value is not None.
     """
     for key, value in vars(args).items():
         # Convert arg names (e.g., log_level) to config names (e.g., LOG_LEVEL)
         config_key = key.upper()
         if hasattr(config_module, config_key):
-            # We only update if the command-line arg was actually provided (or has a default different from None)
-            # or if we want to allow overriding with None (which we generally don't for these types of configs)
-            if value is not None: # Ensure we don't overwrite a config default with a None arg if parser allows it
+            if value is not None:
                 setattr(config_module, config_key, value)
-                # print(f"Config updated: {config_key} = {value}") # For debugging
-            # else:
-                # print(f"Config not updated for {config_key} as arg value is None") # For debugging
-        # else:
-            # print(f"Config key {config_key} not found in config module") # For debugging
 
     # Special handling for derived paths if SAVE_DIR is updated by args
     if hasattr(args, 'save_dir') and args.save_dir is not None:
-        config_module.SAVE_DIR = args.save_dir
-        # Note: RUN_SPECIFIC_SAVE_DIR and CURRENT_BEST_MODEL_DIR will be
-        # constructed in main.py using the potentially updated SAVE_DIR.
+        save_dir_value = args.save_dir
+        # Convert relative path to absolute path based on project root if needed
+        if save_dir_value.startswith('./'):
+            save_dir_value = os.path.join(project_root, save_dir_value[2:])
+        config_module.SAVE_DIR = save_dir_value
 
-    # Update device based on availability, can be part of initial config or updated if needed
+    # Update device based on availability
     config_module.DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# --- Reward Calculator Parameters ---
-# Standard Rewards/Penalties
-REWARD_CALC_PENALTY_COLLISION = -1000.0
-REWARD_CALC_REWARD_GOAL_REACHED = 300.0
-REWARD_CALC_PENALTY_PER_STEP = -0.1
-REWARD_CALC_REWARD_DISTANCE_FACTOR = 1.0
-REWARD_CALC_WAYPOINT_REACHED_THRESHOLD = 5.0  # meters
-REWARD_CALC_TARGET_SPEED_KMH_DEFAULT = 40.0 # Default, can be overridden by RewardCalculator init arg
-
-# Speed related
-REWARD_CALC_TARGET_SPEED_REWARD_FACTOR = 0.5
-REWARD_CALC_TARGET_SPEED_STD_DEV_KMH = 10.0
-REWARD_CALC_MIN_FORWARD_SPEED_THRESHOLD = 0.1  # m/s
-REWARD_CALC_PENALTY_STUCK_OR_REVERSING_BASE = -0.5
-
-# Lane keeping
-REWARD_CALC_LANE_CENTERING_REWARD_FACTOR = 0.2
-REWARD_CALC_LANE_ORIENTATION_PENALTY_FACTOR = 0.1
-REWARD_CALC_PENALTY_OFFROAD = -50.0
-
-# Traffic lights
-REWARD_CALC_PENALTY_TRAFFIC_LIGHT_RED_MOVING = -75.0
-REWARD_CALC_REWARD_TRAFFIC_LIGHT_GREEN_PROCEED = 5.0
-REWARD_CALC_REWARD_TRAFFIC_LIGHT_STOPPED_AT_RED = 15.0
-REWARD_CALC_VEHICLE_STOPPED_SPEED_THRESHOLD = 0.1  # m/s
-
-# Proximity
-REWARD_CALC_PROXIMITY_THRESHOLD_VEHICLE = 4.0  # meters
-REWARD_CALC_PENALTY_PROXIMITY_VEHICLE_FRONT = -15.0
-
-# Steering Behavior
-REWARD_CALC_PENALTY_EXCESSIVE_STEER_BASE = -0.5 # Base penalty factor for high steering on straights
-REWARD_CALC_STEER_THRESHOLD_STRAIGHT = 0.1  # Steer magnitude above which penalty applies on straights
-REWARD_CALC_MIN_SPEED_FOR_STEER_PENALTY_KMH = 10.0 # Only apply steer penalty above this speed
-
-# New: Penalty for crossing a solid lane marking
-REWARD_CALC_PENALTY_SOLID_LANE_CROSS = -40.0 # Adjusted penalty for crossing solid lines
-
-# New: Penalty for driving on the sidewalk
-REWARD_CALC_PENALTY_SIDEWALK = -800.0
-
-# New: Speed threshold (m/s) considered "stopped" when reaching goal
-STOP_AT_GOAL_SPEED_THRESHOLD = 0.2
-
-# Phase 0 Specific Adjustments (can be overridden by curriculum config)
-REWARD_CALC_PHASE0_PENALTY_PER_STEP = -0.01
-REWARD_CALC_PHASE0_DISTANCE_FACTOR_MULTIPLIER = 2.5
-REWARD_CALC_PHASE0_GOAL_REWARD_MULTIPLIER = 1.5
-REWARD_CALC_PHASE0_STUCK_PENALTY_BASE = -0.1
-REWARD_CALC_PHASE0_STUCK_MULTIPLIER_STUCK = 1.0
-REWARD_CALC_PHASE0_STUCK_MULTIPLIER_REVERSING = 2.0
-REWARD_CALC_PHASE0_OFFROAD_PENALTY = -10.0
-REWARD_CALC_PHASE0_OFFROAD_NO_WAYPOINT_MULTIPLIER = 1.5
-
-# --- Sensor Default Parameters (CarlaEnv) ---
-CARLA_DEFAULT_IMAGE_WIDTH = 84
-CARLA_DEFAULT_IMAGE_HEIGHT = 84
-
-CARLA_DEFAULT_LIDAR_CHANNELS = 32
-CARLA_DEFAULT_LIDAR_RANGE = 50.0  # meters
-CARLA_DEFAULT_LIDAR_POINTS_PER_SECOND = 120000
-CARLA_DEFAULT_LIDAR_ROTATION_FREQUENCY = 10.0  # Hz
-CARLA_DEFAULT_LIDAR_UPPER_FOV = 15.0
-CARLA_DEFAULT_LIDAR_LOWER_FOV = -25.0
-CARLA_PROCESSED_LIDAR_NUM_POINTS = 720 # Example: 360 azimuth steps * 2 beams (simplified)
-
-CARLA_DEFAULT_RADAR_RANGE = 70.0  # meters
-CARLA_DEFAULT_RADAR_HORIZONTAL_FOV = 30.0  # degrees
-CARLA_DEFAULT_RADAR_VERTICAL_FOV = 10.0  # degrees
-CARLA_DEFAULT_RADAR_POINTS_PER_SECOND = 1500
-CARLA_PROCESSED_RADAR_MAX_DETECTIONS = 20
-
-# --- Action Mapping for Discrete Actions --- 
-# Defines the control outputs for each discrete action index.
-DISCRETE_ACTION_MAP = {
-    0: {"throttle": 0.75, "steer": 0.0,  "brake": 0.0, "reverse": False, "name": "Fwd-Fast"},
-    1: {"throttle": 0.5,  "steer": -0.5, "brake": 0.0, "reverse": False, "name": "Fwd-Left"},
-    2: {"throttle": 0.5,  "steer": 0.5,  "brake": 0.0, "reverse": False, "name": "Fwd-Right"},
-    3: {"throttle": 0.0,  "steer": 0.0,  "brake": 1.0, "reverse": False, "name": "Brake"},
-    4: {"throttle": 0.3,  "steer": 0.0,  "brake": 0.0, "reverse": False, "name": "Coast"}, # Gentle forward
-    5: {"throttle": 0.3,  "steer": 0.0,  "brake": 0.0, "reverse": True,  "name": "Reverse"}
-}
-
-# Action mapping to be used when reverse is disallowed by the current curriculum phase.
-# Action 5 (Reverse) is remapped to a moderate brake.
-DISCRETE_ACTION_MAP_NO_REVERSE = {
-    0: DISCRETE_ACTION_MAP[0],
-    1: DISCRETE_ACTION_MAP[1],
-    2: DISCRETE_ACTION_MAP[2],
-    3: DISCRETE_ACTION_MAP[3],
-    4: DISCRETE_ACTION_MAP[4],
-    5: {"throttle": 0.0,  "steer": 0.0,  "brake": 0.5, "reverse": False, "name": "Brake"} # Remapped Reverse
-}
-
-NUM_DISCRETE_ACTIONS = len(DISCRETE_ACTION_MAP) # Should be 6
-
-# --- CarlaEnv Default Curriculum Phases ---
-CARLA_DEFAULT_CURRICULUM_PHASES = [
-    {"name": "Phase0_BasicControl_Straight", "episodes": 200, 
-     "reward_config": "phase0", "spawn_config": "fixed_straight",
-     "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"}, # No traffic initially
-     "allow_reverse": False, "max_steps": 300, # Shorter episodes for basic task
-     "phase0_target_distance_m": 75.0, # Slightly longer straight
-     "phase0_spawn_point_idx": 41 # Example: A known good straight spawn point in Town03
-     },
-
-    {"name": "Phase0_BasicControl_SimpleTurns", "episodes": 300, 
-     "reward_config": "phase0", "spawn_config": "fixed_simple_turns", 
-     "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"},
-     "require_stop_at_goal": True,
-     "allow_reverse": False, "max_steps": 500 
-    },
-
-    {"name": "Phase1_LaneFollowing_NoTraffic", "episodes": 500, 
-     "reward_config": "standard", "spawn_config": "random_gentle_curves", 
-     "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"},
-     "require_stop_at_goal": False, # Focus on continuous driving
-     "allow_reverse": False, "max_steps": 1000
-    },
-
-    {"name": "Phase2_LaneFollowing_LightStaticTraffic", "episodes": 750, 
-     "reward_config": "standard", "spawn_config": "random_urban", # More varied routes
-     "traffic_config": {"num_vehicles": 20, "num_walkers": 10, "type": "static"}, # Introduce static obstacles
-     "require_stop_at_goal": False,
-     "allow_reverse": False, "max_steps": 1200
-    },
-    
-    {"name": "Phase2_5_ReverseManeuvers", "episodes": 250, 
-     "reward_config": "standard", "spawn_config": "random_short_segment_for_reverse", # Custom spawn for reversing practice
-     "traffic_config": {"num_vehicles": 0, "num_walkers": 0, "type": "none"},
-     "require_stop_at_goal": True, # Goal is to park or similar
-     "allow_reverse": True, "max_steps": 400 # Shorter, focused episodes
-    },
-
-    {"name": "Phase3_TrafficLights_NoDynamicTraffic", "episodes": 600, 
-     "reward_config": "standard", "spawn_config": "random_urban_with_traffic_lights", 
-     "traffic_config": {"num_vehicles": 15, "num_walkers": 10, "type": "static"}, # Static obstacles for complexity
-     "require_stop_at_goal": True, 
-     "allow_reverse": False, "max_steps": 1500
-    },
-
-    {"name": "Phase4_LightDynamicTraffic_Intersections", "episodes": 1000, 
-     "reward_config": "standard", "spawn_config": "random_urban_with_traffic_lights", # Ensures intersections
-     "traffic_config": {"num_vehicles": 25, "num_walkers": 15, "type": "dynamic"},
-     "require_stop_at_goal": False,
-     "allow_reverse": True, "max_steps": 2000
-    },
-
-    {"name": "Phase5_ComplexUrbanDriving", "episodes": 1500, 
-     "reward_config": "standard", "spawn_config": "random_urban_full", 
-     "traffic_config": {"num_vehicles": 40, "num_walkers": 30, "type": "dynamic"},
-     "require_stop_at_goal": False,
-     "allow_reverse": True, "max_steps": 2500
-    },
-
-    {"name": "Phase6_DenseTrafficAndPedestrians", "episodes": 2000, # Longest phase for mastery
-     "reward_config": "standard", 
-     "spawn_config": "random_urban_full", # Most challenging spawns
-     "traffic_config": {
-         "num_vehicles": 60, 
-         "num_walkers": 40,  
-         "type": "dynamic_traffic_light_aware", # Ensure TM uses TL info if possible
-     },
-     "require_stop_at_goal": False,
-     "allow_reverse": True, 
-     "max_steps": 3000
-    }
-]
 
 def get_config_dict(config_module):
     """Returns a dictionary of all uppercase attributes from the config module."""

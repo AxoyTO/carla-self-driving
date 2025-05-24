@@ -21,8 +21,9 @@ from utils.setup_utils import parse_arguments, setup_logging
 from utils.component_initializers import initialize_training_components
 from app.training.dqn_trainer import DQNTrainer
 
-# Define a base directory for TensorBoard logs, outside model_checkpoints
-TENSORBOARD_BASE_LOG_DIR = "./tensorboard_logs"
+# Define a base directory for TensorBoard logs in the data directory
+# Use absolute path relative to project_root, not relative to current working directory
+TENSORBOARD_BASE_LOG_DIR = os.path.join(project_root, "data", "tensorboard_logs")
 
 def _find_best_model_to_load(base_model_save_dir: str, logger_instance: logging.Logger) -> Optional[str]:
     """

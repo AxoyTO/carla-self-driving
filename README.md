@@ -223,6 +223,18 @@ python app/main.py --help                     # Show all options
 # Direct Python commands (if CARLA server is running)
 python app/main.py --enable-pygame-display    # With visualization
 python app/main.py --num-episodes 500         # Custom parameters
+
+# Quick test run with visualization
+python app/main.py --enable-pygame-display --num-episodes 10
+
+# Load existing model and continue training
+python app/main.py --load-model-from ./models/model_checkpoints/best_model
+
+# Training with faster simulation
+python app/main.py --time-scale 2.0
+
+# Save sensor data for debugging
+python app/main.py --enable-pygame-display --save-sensor-data
 ```
 
 ### CARLA Server Manager

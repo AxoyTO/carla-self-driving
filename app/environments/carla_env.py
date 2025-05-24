@@ -1,16 +1,17 @@
-import carla
-import random
-import numpy as np
-import time 
-import weakref 
-import logging 
-from collections import OrderedDict, Counter
-import math 
+import sys
 import os
-from datetime import datetime, timedelta 
-from typing import Optional, Tuple, List, Dict, Any
+import time
+import random
+import logging
+import weakref
+import math
+import numpy as np
+import carla
+from collections import OrderedDict
+from datetime import datetime, timedelta
+from typing import Dict, Any, List, Optional, Tuple
 
-import config
+import app.config as config
 from .base_env import BaseEnv
 import gymnasium as gym 
 from gymnasium import spaces 
@@ -40,7 +41,7 @@ class CarlaEnv(BaseEnv):
                  enable_pygame_display=False, 
                  pygame_window_width=1920, pygame_window_height=1080,
                  save_sensor_data=False,      
-                 sensor_save_base_path="./sensor_capture", 
+                 sensor_save_base_path=config.SENSOR_DATA_SAVE_PATH, 
                  sensor_save_interval=100, 
                  curriculum_phases: Optional[List[Dict[str, Any]]] = None,
                  run_name_prefix: Optional[str] = "carla_run"

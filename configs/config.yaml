@@ -1,0 +1,324 @@
+# Main Configuration for CARLA RL Training Application
+# This file consolidates all configurable parameters previously in config.py
+
+# General Settings
+general:
+  experiment_name: "dqn_carla_agent"
+  carla_root: "/opt/carla-simulator"
+
+# Default Arguments (can be overridden by command-line args)
+defaults:
+  # General Training Arguments
+  log_level: "INFO"
+  num_episodes: 1000
+  max_steps_per_episode: 1000
+  save_interval: 50
+  eval_interval: 25
+  num_eval_episodes: 5
+  save_dir: "./models/model_checkpoints"
+  load_model_from: null
+  
+  # Epsilon Configuration
+  epsilon_start: 1.0
+  epsilon_end: 0.01
+  epsilon_decay: 0.995
+  epsilon_eval: 0.01
+  
+  # Display Configuration
+  enable_pygame_display: false
+  pygame_width: 1920
+  pygame_height: 1080
+  disable_sensor_views: false
+  
+  # Sensor Data Saving
+  save_sensor_data: false
+  sensor_data_save_path: "./data/sensor_capture"
+  sensor_save_interval: 100
+
+# Environment Parameters
+environment:
+  # CARLA Connection
+  host: "localhost"
+  port: 2000
+  town: "Town03"
+  timestep: 0.10
+  time_scale: 1.0
+  
+  # Image/Sensor Configuration
+  image_width: 84
+  image_height: 84
+  
+  # Sensor Defaults
+  camera:
+    default_width: 84
+    default_height: 84
+  
+  lidar:
+    default_channels: 32
+    default_range: 50.0
+    default_points_per_second: 120000
+    default_rotation_frequency: 10.0
+    default_upper_fov: 15.0
+    default_lower_fov: -25.0
+    processed_num_points: 720
+  
+  radar:
+    default_range: 70.0
+    default_horizontal_fov: 30.0
+    default_vertical_fov: 10.0
+    default_points_per_second: 1500
+    processed_max_detections: 20
+
+# Agent Parameters
+agent:
+  learning_rate: 0.0001
+  gamma: 0.99
+  tau: 0.001
+  replay_buffer_capacity: 100000
+  batch_size: 64
+  update_every: 4
+
+# Reward Calculator Parameters
+reward_calculator:
+  # Standard Rewards/Penalties
+  penalty_collision: -1000.0
+  reward_goal_reached: 300.0
+  penalty_per_step: -0.1
+  reward_distance_factor: 1.0
+  waypoint_reached_threshold: 5.0
+  target_speed_kmh_default: 40.0
+  
+  # Speed related
+  target_speed_reward_factor: 0.5
+  target_speed_std_dev_kmh: 10.0
+  min_forward_speed_threshold: 0.1
+  penalty_stuck_or_reversing_base: -0.5
+  
+  # Lane keeping
+  lane_centering_reward_factor: 0.2
+  lane_orientation_penalty_factor: 0.1
+  penalty_offroad: -50.0
+  
+  # Traffic lights
+  penalty_traffic_light_red_moving: -75.0
+  reward_traffic_light_green_proceed: 5.0
+  reward_traffic_light_stopped_at_red: 15.0
+  vehicle_stopped_speed_threshold: 0.1
+  
+  # Proximity
+  proximity_threshold_vehicle: 4.0
+  penalty_proximity_vehicle_front: -15.0
+  
+  # Steering Behavior
+  penalty_excessive_steer_base: -0.5
+  steer_threshold_straight: 0.1
+  min_speed_for_steer_penalty_kmh: 10.0
+  
+  # Lane and Sidewalk Penalties
+  penalty_solid_lane_cross: -40.0
+  penalty_sidewalk: -800.0
+  
+  # Goal Requirements
+  stop_at_goal_speed_threshold: 0.2
+  
+  # Phase 0 Specific Adjustments
+  phase0:
+    penalty_per_step: -0.01
+    distance_factor_multiplier: 2.5
+    goal_reward_multiplier: 1.5
+    stuck_penalty_base: -0.1
+    stuck_multiplier_stuck: 1.0
+    stuck_multiplier_reversing: 2.0
+    offroad_penalty: -10.0
+    offroad_no_waypoint_multiplier: 1.5
+
+# Action Mapping for Discrete Actions
+actions:
+  discrete_action_map:
+    0:
+      throttle: 0.75
+      steer: 0.0
+      brake: 0.0
+      reverse: false
+      name: "Fwd-Fast"
+    1:
+      throttle: 0.5
+      steer: -0.5
+      brake: 0.0
+      reverse: false
+      name: "Fwd-Left"
+    2:
+      throttle: 0.5
+      steer: 0.5
+      brake: 0.0
+      reverse: false
+      name: "Fwd-Right"
+    3:
+      throttle: 0.0
+      steer: 0.0
+      brake: 1.0
+      reverse: false
+      name: "Brake"
+    4:
+      throttle: 0.3
+      steer: 0.0
+      brake: 0.0
+      reverse: false
+      name: "Coast"
+    5:
+      throttle: 0.3
+      steer: 0.0
+      brake: 0.0
+      reverse: true
+      name: "Reverse"
+  
+  # Action mapping when reverse is disallowed
+  discrete_action_map_no_reverse:
+    0:
+      throttle: 0.75
+      steer: 0.0
+      brake: 0.0
+      reverse: false
+      name: "Fwd-Fast"
+    1:
+      throttle: 0.5
+      steer: -0.5
+      brake: 0.0
+      reverse: false
+      name: "Fwd-Left"
+    2:
+      throttle: 0.5
+      steer: 0.5
+      brake: 0.0
+      reverse: false
+      name: "Fwd-Right"
+    3:
+      throttle: 0.0
+      steer: 0.0
+      brake: 1.0
+      reverse: false
+      name: "Brake"
+    4:
+      throttle: 0.3
+      steer: 0.0
+      brake: 0.0
+      reverse: false
+      name: "Coast"
+    5:
+      throttle: 0.0
+      steer: 0.0
+      brake: 0.5
+      reverse: false
+      name: "Brake"  # Remapped Reverse
+
+# Curriculum Learning Phases
+curriculum:
+  default_phases:
+    - name: "Phase0_BasicControl_Straight"
+      episodes: 200
+      reward_config: "phase0"
+      spawn_config: "fixed_straight"
+      traffic_config:
+        num_vehicles: 0
+        num_walkers: 0
+        type: "none"
+      allow_reverse: false
+      max_steps: 300
+      phase0_target_distance_m: 75.0
+      phase0_spawn_point_idx: 41
+      
+    - name: "Phase0_BasicControl_SimpleTurns"
+      episodes: 300
+      reward_config: "phase0"
+      spawn_config: "fixed_simple_turns"
+      traffic_config:
+        num_vehicles: 0
+        num_walkers: 0
+        type: "none"
+      require_stop_at_goal: true
+      allow_reverse: false
+      max_steps: 500
+      
+    - name: "Phase1_LaneFollowing_NoTraffic"
+      episodes: 500
+      reward_config: "standard"
+      spawn_config: "random_gentle_curves"
+      traffic_config:
+        num_vehicles: 0
+        num_walkers: 0
+        type: "none"
+      require_stop_at_goal: false
+      allow_reverse: false
+      max_steps: 1000
+      
+    - name: "Phase2_LaneFollowing_LightStaticTraffic"
+      episodes: 750
+      reward_config: "standard"
+      spawn_config: "random_urban"
+      traffic_config:
+        num_vehicles: 20
+        num_walkers: 10
+        type: "static"
+      require_stop_at_goal: false
+      allow_reverse: false
+      max_steps: 1200
+      
+    - name: "Phase2_5_ReverseManeuvers"
+      episodes: 250
+      reward_config: "standard"
+      spawn_config: "random_short_segment_for_reverse"
+      traffic_config:
+        num_vehicles: 0
+        num_walkers: 0
+        type: "none"
+      require_stop_at_goal: true
+      allow_reverse: true
+      max_steps: 400
+      
+    - name: "Phase3_TrafficLights_NoDynamicTraffic"
+      episodes: 600
+      reward_config: "standard"
+      spawn_config: "random_urban_with_traffic_lights"
+      traffic_config:
+        num_vehicles: 15
+        num_walkers: 10
+        type: "static"
+      require_stop_at_goal: true
+      allow_reverse: false
+      max_steps: 1500
+      
+    - name: "Phase4_LightDynamicTraffic_Intersections"
+      episodes: 1000
+      reward_config: "standard"
+      spawn_config: "random_urban_with_traffic_lights"
+      traffic_config:
+        num_vehicles: 25
+        num_walkers: 15
+        type: "dynamic"
+      require_stop_at_goal: false
+      allow_reverse: true
+      max_steps: 2000
+      
+    - name: "Phase5_ComplexUrbanDriving"
+      episodes: 1500
+      reward_config: "standard"
+      spawn_config: "random_urban_full"
+      traffic_config:
+        num_vehicles: 40
+        num_walkers: 30
+        type: "dynamic"
+      require_stop_at_goal: false
+      allow_reverse: true
+      max_steps: 2500
+      
+    - name: "Phase6_DenseTrafficAndPedestrians"
+      episodes: 2000
+      reward_config: "standard"
+      spawn_config: "random_urban_full"
+      traffic_config:
+        num_vehicles: 60
+        num_walkers: 40
+        type: "dynamic_traffic_light_aware"
+      require_stop_at_goal: false
+      allow_reverse: true
+      max_steps: 3000 
