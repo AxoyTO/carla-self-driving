@@ -54,6 +54,11 @@ class RewardCalculator:
         # Load new penalty for driving on sidewalk
         self.PENALTY_SIDEWALK = config.REWARD_CALC_PENALTY_SIDEWALK
 
+        # Load steering penalty parameters
+        self.PENALTY_EXCESSIVE_STEER_BASE = config.REWARD_CALC_PENALTY_EXCESSIVE_STEER_BASE
+        self.STEER_THRESHOLD_STRAIGHT = config.REWARD_CALC_STEER_THRESHOLD_STRAIGHT
+        self.MIN_SPEED_FOR_STEER_PENALTY_KMH = config.REWARD_CALC_MIN_SPEED_FOR_STEER_PENALTY_KMH
+
         # Phase 0 specific adjustments (can be overridden by curriculum config or reward_configs dict)
         # These are defaults if not specified in curriculum phase reward_configs
         self.phase0_penalty_per_step = config.REWARD_CALC_PHASE0_PENALTY_PER_STEP
@@ -277,11 +282,14 @@ class RewardCalculator:
 
     def calculate_reward(self, vehicle, current_location, previous_location, 
                          collision_info, relevant_traffic_light_state, 
-                         current_action_for_reward, # This name matches the old direct param
+                         current_action_for_reward, 
                          forward_speed_debug, 
                          carla_map, target_waypoint,
                          lane_invasion_event: Optional[carla.LaneInvasionEvent] = None,
-                         action_taken: Optional[Any] = None # Add the new action_taken parameter
+                         action_taken: Optional[Any] = None, 
+                         segment_target_reached: bool = False, 
+                         distance_to_final_goal: Optional[float] = None,
+                         current_road_option: Optional[Any] = None # New: from carla.agents.navigation.local_planner import RoadOption
                         ) -> Tuple[float, bool, bool, bool]:
         """
         Calculates the reward for the current step.
@@ -303,28 +311,31 @@ class RewardCalculator:
         current_speed_kmh = current_speed_mps * 3.6
 
         is_reversing_control = vehicle.get_control().reverse 
-        # Use the `action_taken` parameter now, which corresponds to `current_action_for_reward` from CarlaEnv
         intended_reverse_action = (action_taken == 5) if env.discrete_actions else False
 
+        # --- Per-step penalty --- 
         if reward_type == "phase0":
             total_reward += self.phase0_penalty_per_step
-            if carla_map:
-                wp_phase0 = carla_map.get_waypoint(current_location, project_to_road=True, lane_type=carla.LaneType.Any)
-                if wp_phase0 and wp_phase0.lane_type != carla.LaneType.Driving:
-                    total_reward += self.phase0_offroad_penalty
-                elif not wp_phase0:
-                    total_reward += self.phase0_offroad_penalty * self.phase0_offroad_no_waypoint_multiplier
         elif reward_type == "standard":
             total_reward += self.PENALTY_PER_STEP
 
+        # --- Goal and Distance Rewards --- 
         current_phase_config = env.curriculum_manager.get_current_phase_config() if env.curriculum_manager else {}
         require_stop_at_goal = current_phase_config.get("require_stop_at_goal", False)
         total_reward += self._calculate_distance_goal_reward(
             current_location, previous_location, target_waypoint, reward_type, current_speed_mps, require_stop_at_goal
         )
+        if segment_target_reached and reward_type == "standard":
+            is_not_final_goal = True
+            if distance_to_final_goal is not None and distance_to_final_goal < self.WAYPOINT_REACHED_THRESHOLD:
+                is_not_final_goal = False
+            if is_not_final_goal:
+                total_reward += 5.0 
+                logger.debug(f"Intermediate segment target reached, +5 reward.")
 
+        # --- Control and Behavior Rewards/Penalties (mostly for standard) --- 
         total_reward += self._calculate_stuck_reversing_penalty(
-            current_speed_mps, is_reversing_control, intended_reverse_action, reward_type # intended_reverse_action uses action_taken
+            current_speed_mps, is_reversing_control, intended_reverse_action, reward_type
         )
 
         if reward_type == "standard":
@@ -346,11 +357,36 @@ class RewardCalculator:
             total_reward += prox_penalty
             if prox_flag_from_calc: hud_proximity_flag = True
 
+            # --- New Steering Penalty --- 
+            steer_input = vehicle.get_control().steer
+            # Check if current_road_option is available and indicates a straight path
+            # (RoadOption is an enum, so we need to import it or use its integer values if known)
+            # For now, let's assume RoadOption.LANEFOLLOW and RoadOption.STRAIGHT are relevant
+            # We might need to import RoadOption from carla.agents.navigation.local_planner
+            # For simplicity here, let's assume specific RoadOption values if the import is tricky for now
+            # RoadOption.LANEFOLLOW = 4, RoadOption.STRAIGHT = 5 (based on common CARLA agent code)
+            is_on_straight_segment = False
+            if current_road_option is not None:
+                # self.logger.debug(f"Current RoadOption: {current_road_option} (type: {type(current_road_option)})")
+                # Convert to int if it's an enum, or compare directly if it's already int/str
+                try: # Attempt to convert to int if it's an enum like RoadOption
+                    road_option_value = int(current_road_option)
+                    if road_option_value == 4 or road_option_value == 5: # LANEFOLLOW or STRAIGHT
+                        is_on_straight_segment = True
+                except (TypeError, ValueError):
+                    # self.logger.warning(f"Could not convert current_road_option '{current_road_option}' to int for steer penalty check.")
+                    pass # If it's not an enum that converts to int, this check might fail silently or need adjustment
+            
+            if is_on_straight_segment and abs(steer_input) > self.STEER_THRESHOLD_STRAIGHT and current_speed_kmh > self.MIN_SPEED_FOR_STEER_PENALTY_KMH:
+                penalty = self.PENALTY_EXCESSIVE_STEER_BASE * (abs(steer_input) - self.STEER_THRESHOLD_STRAIGHT) * 5.0 # Scale penalty
+                total_reward += penalty
+                # self.logger.debug(f"Steer penalty: {penalty:.2f} for steer: {steer_input:.2f} on straight segment.")
+
+        # --- Critical Event Penalties (apply to all reward types) --- 
         coll_penalty, coll_flag_from_calc = self._calculate_collision_penalty(collision_info)
         total_reward += coll_penalty
         if coll_flag_from_calc: hud_collision_flag = True
         
-        # Update internal state flags that CarlaEnv._check_done might use
         self.last_collision_flag = hud_collision_flag
         self.last_on_sidewalk_flag = hud_on_sidewalk_flag
         self.last_proximity_penalty_flag = hud_proximity_flag
