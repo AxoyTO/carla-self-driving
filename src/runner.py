@@ -73,6 +73,9 @@ class TrainingRunner:
         # Get a logger for the runner module (or a specific name)
         self.main_logger = logging.getLogger(__name__) 
 
+        # Set log level for Open3D visualizer to WARNING to suppress its INFO message
+        logging.getLogger("utils.open3d_visualizer").setLevel(logging.WARNING)
+
         # Autoload best model if no specific model is requested by user
         if self.args.load_model_from is None:
             self.main_logger.info(f"No specific model to load. Attempting to find best model in {self.args.save_dir}...")
@@ -82,7 +85,7 @@ class TrainingRunner:
                 self.main_logger.info(f"Autoloading best model from: {os.path.abspath(self.args.load_model_from)}")
             else:
                 self.main_logger.info("No best model found to autoload. Starting fresh.")
-        
+
         self.main_logger.info(f"Training session setup initiated by TrainingRunner.")
         self.main_logger.info(f"Log level set to: {self.args.log_level.upper()}")
         self.main_logger.info(f"Using device: {config.DEVICE}")
