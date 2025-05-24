@@ -11,10 +11,10 @@ from gymnasium import spaces
 logger = logging.getLogger(__name__)
 
 # Default LIDAR parameters
-DEFAULT_LIDAR_CHANNELS = 32
+DEFAULT_LIDAR_CHANNELS = 64 # Moderate high-density
 DEFAULT_LIDAR_RANGE = 50.0  # meters
-DEFAULT_LIDAR_POINTS_PER_SECOND = 60000 # Drastically reduced from 240000
-DEFAULT_LIDAR_ROTATION_FREQUENCY = 10.0 # Reverted from 5.0 Hz
+DEFAULT_LIDAR_POINTS_PER_SECOND = 150000 # Moderate high-density
+DEFAULT_LIDAR_ROTATION_FREQUENCY = 10.0 # Standard Hz
 DEFAULT_LIDAR_UPPER_FOV = 15.0
 DEFAULT_LIDAR_LOWER_FOV = -25.0
 DEFAULT_PROCESSED_LIDAR_NUM_POINTS = 360 # Number of points after processing
@@ -168,12 +168,16 @@ def process_semantic_lidar_data(semantic_lidar_measurement: carla.SemanticLidarM
 def _parse_lidar_cb(weak_self, lidar_data: carla.LidarMeasurement, sensor_key: str, num_points_processed: int):
     self = weak_self()
     if not self or not hasattr(self, 'latest_sensor_data'): return
+    # Store the raw data for visualizers that might need it
+    self.latest_sensor_data[sensor_key + '_raw'] = lidar_data 
     processed_numpy_array = process_lidar_data(lidar_data, num_points_processed)
     self.latest_sensor_data[sensor_key] = processed_numpy_array
 
 def _parse_semantic_lidar_cb(weak_self, sem_lidar_data: carla.SemanticLidarMeasurement, sensor_key: str, num_points_processed: int):
     self = weak_self()
     if not self or not hasattr(self, 'latest_sensor_data'): return
+    # Store the raw data for visualizers
+    self.latest_sensor_data[sensor_key + '_raw'] = sem_lidar_data
     processed_numpy_array = process_semantic_lidar_data(sem_lidar_data, num_points_processed)
     self.latest_sensor_data[sensor_key] = processed_numpy_array
 
