@@ -128,11 +128,14 @@ class TrafficManager:
                 self.carla_tm.vehicle_percentage_speed_difference(vehicle, speed_factor)
                 self.carla_tm.update_vehicle_lights(vehicle, True)  # Use vehicle lights
                 
-                # Randomize lane changing behavior
-                lane_change = random.choice([carla.LaneChange.NONE, carla.LaneChange.RIGHT, carla.LaneChange.LEFT, carla.LaneChange.BOTH])
-                self.carla_tm.set_path_finding_algorithm(vehicle, True)  # Use path finding
-                self.carla_tm.set_lane_change(vehicle, lane_change)
-                
+                # Randomize auto lane change behavior for CARLA 0.9.15 TM
+                allow_auto_lane_change = random.choice([True, False])
+                self.carla_tm.auto_lane_change(vehicle, allow_auto_lane_change)
+                # self.logger.debug(f"Vehicle {vehicle.id} auto_lane_change set to: {allow_auto_lane_change}")
+
+                # self.carla_tm.set_path_finding_algorithm(vehicle, True) # This API doesn't exist on TM per vehicle.
+                # Pathfinding is implicit in TM behavior or a global TM setting if available.
+
                 # Some vehicles should respect traffic lights, others might not
                 self.carla_tm.ignore_lights_percentage(vehicle, random.randint(0, 20))
                 
@@ -147,25 +150,36 @@ class TrafficManager:
         spawn_points = []
         
         # Try to find valid spawn locations for walkers
-        for i in range(num_walkers * 2):  # Try more locations than needed
+        # Increase oversampling to get more candidate points
+        # Try to get up to num_walkers * 5 potential locations, with a minimum of 20 attempts if num_walkers is small.
+        # And a maximum of, say, 500 attempts to avoid excessive looping if map has few valid spots.
+        max_attempts = min(max(num_walkers * 5, 20), 500)
+        for _ in range(max_attempts):
             spawn_point = carla.Transform()
             loc = self.world.get_random_location_from_navigation()
             if loc:
                 spawn_point.location = loc
                 spawn_points.append(spawn_point)
+            if len(spawn_points) >= num_walkers * 2: # Stop if we have a decent pool, e.g. 2x needed
+                break
                 
         if not spawn_points:
-            self.logger.error("Could not find any walker spawn points!")
+            self.logger.error("Could not find any walker spawn points after multiple attempts!")
             return
-            
-        # Limit to the actual number we want
-        spawn_points = spawn_points[:num_walkers]
+        
+        # Shuffle and limit to the actual number we want to attempt to spawn
+        random.shuffle(spawn_points)
+        spawn_points_to_try = spawn_points[:num_walkers]
         
         # Create walker blueprints
         walker_batch = []
         walker_speed = []
         
-        for i, spawn_point in enumerate(spawn_points):
+        if not spawn_points_to_try:
+            self.logger.warning("No valid spawn points selected to try for walkers.")
+            return
+
+        for i, spawn_point in enumerate(spawn_points_to_try):
             walker_bp = random.choice(self.walker_blueprints)
             
             # Set not invincible
