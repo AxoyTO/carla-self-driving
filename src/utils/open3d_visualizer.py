@@ -3,6 +3,9 @@ import numpy as np
 import carla # For type hints
 import logging
 from matplotlib import cm # For colormaps
+import threading # Added for threading
+import queue # Added for thread-safe communication
+import time # For sleep in thread loop
 
 logger = logging.getLogger(__name__)
 
@@ -49,39 +52,107 @@ class Open3DLidarVisualizer:
         self.width = width
         self.height = height
         
-        self.vis = o3d.visualization.Visualizer()
+        self.vis = None # Will be created in the thread
         self.point_cloud_o3d = o3d.geometry.PointCloud()
-        self.is_initialized = False
+        self.is_initialized_in_thread = False # Renamed for clarity
         self.view_control = None
-        self._active = False # To be controlled externally
+        self._active = False
+        self.camera_distance = 15.0
+        self.camera_pitch_deg = -30.0
+        self.camera_yaw_offset_deg = 0.0
 
-        # Default camera parameters (can be adjusted)
-        self.camera_distance = 15.0  # meters from vehicle
-        self.camera_pitch_deg = -30.0 # degrees, looking down
-        self.camera_yaw_offset_deg = 0.0 # degrees, offset from vehicle yaw
+        self._vis_thread = None
+        self._data_queue = queue.Queue(maxsize=1) # Store only the latest data
+        self._stop_event = threading.Event()
 
-        logger.info("Open3D LIDAR Visualizer created. Call activate() to show window.")
+        # logger.info("Open3D LIDAR Visualizer created. Call activate() to show window.") # Log moved to activate
+
+    def _visualization_thread_target(self):
+        """Target function for the Open3D visualization thread."""
+        try:
+            self.vis = o3d.visualization.Visualizer()
+            self.vis.create_window(window_name=self.window_name, width=self.width, height=self.height, visible=True)
+            render_option = self.vis.get_render_option()
+            render_option.background_color = np.asarray([0.05, 0.05, 0.05])
+            render_option.point_size = 1.5
+            logger.info("Open3D Lidar window created in thread.")
+            self.is_initialized_in_thread = False # Reset for add_geometry
+
+            while not self._stop_event.is_set():
+                try:
+                    lidar_data, ego_transform = self._data_queue.get(timeout=0.01) # Non-blocking with timeout
+                    if lidar_data is None and ego_transform is None: # Sentinel for stopping
+                        break
+                    
+                    points_world, colors = self._process_lidar_data(lidar_data)
+                    if points_world is not None and colors is not None:
+                        self.point_cloud_o3d.points = o3d.utility.Vector3dVector(points_world)
+                        self.point_cloud_o3d.colors = o3d.utility.Vector3dVector(colors)
+                    else:
+                        self.point_cloud_o3d.points = o3d.utility.Vector3dVector()
+                        self.point_cloud_o3d.colors = o3d.utility.Vector3dVector()
+
+                    if not self.is_initialized_in_thread:
+                        self.vis.add_geometry(self.point_cloud_o3d)
+                        self.is_initialized_in_thread = True
+                    else:
+                        self.vis.update_geometry(self.point_cloud_o3d)
+                    
+                    if ego_transform:
+                        self._set_camera_view(ego_transform) # self.vis must be valid here
+
+                except queue.Empty:
+                    pass # No new data, just continue polling events
+                except Exception as e:
+                    logger.error(f"Error in O3D vis thread data processing: {e}", exc_info=True)
+                    # Continue loop unless it's a critical error with self.vis
+
+                if not self.vis.poll_events(): # Returns False if window closed
+                    logger.info("Open3D window closed by user (detected by poll_events).")
+                    break # Exit loop if window closed
+                self.vis.update_renderer()
+                # time.sleep(0.01) # Small sleep to yield thread if CPU usage is high
+
+        except Exception as e:
+            logger.error(f"Exception in Open3D visualization thread: {e}", exc_info=True)
+        finally:
+            if self.vis:
+                self.vis.destroy_window()
+            self._active = False # Ensure this is set when thread exits
+            self.is_initialized_in_thread = False
+            self.vis = None # Clear vis object
+            logger.info("Open3D visualization thread finished.")
 
     def activate(self):
         if not self._active:
-            try:
-                self.vis.create_window(window_name=self.window_name, width=self.width, height=self.height)
-                render_option = self.vis.get_render_option()
-                render_option.background_color = np.asarray([0.05, 0.05, 0.05]) # Dark background
-                render_option.point_size = 1.5
-                # render_option.show_coordinate_frame = True # Optional: show world origin axis
-                self.is_initialized = False # Reset for add_geometry
-                self._active = True
-                logger.info("Open3D Lidar window activated.")
-                return True
-            except Exception as e:
-                logger.error(f"Failed to create Open3D window: {e}")
-                self._active = False
-                return False
-        return True # Already active
+            self._stop_event.clear()
+            self._vis_thread = threading.Thread(target=self._visualization_thread_target, daemon=True)
+            self._vis_thread.start()
+            self._active = True # Mark as active immediately, thread will manage window
+            logger.info("Open3D LIDAR visualizer thread started.")
+            return True
+        return True # Already considered active
 
     def is_active(self) -> bool:
         return self._active
+
+    def update_data(self, lidar_data: carla.SensorData, ego_transform: carla.Transform):
+        if not self._active or lidar_data is None or ego_transform is None:
+            return False # Return False if not active or data invalid, but thread handles actual updates
+        
+        try:
+            # Non-blocking put, discard old data if queue is full (maxsize=1)
+            self._data_queue.put_nowait((lidar_data, ego_transform))
+        except queue.Full:
+            try: # Try to clear and put again
+                self._data_queue.get_nowait()
+                self._data_queue.put_nowait((lidar_data, ego_transform))
+            except queue.Empty:
+                pass # Should not happen if Full was raised
+            except queue.Full:
+                logger.warning("O3D data queue still full after trying to clear. Skipping update.")
+                return False
+        return True # Signifies data was successfully queued
 
     def _process_lidar_data(self, lidar_data: carla.SensorData):
         """Processes CARLA LidarData (standard or semantic) to Open3D points and colors."""
@@ -127,36 +198,8 @@ class Open3DLidarVisualizer:
             
         return points_world_np, colors_rgb
 
-    def update_data(self, lidar_data: carla.SensorData, ego_transform: carla.Transform):
-        if not self._active or lidar_data is None or ego_transform is None:
-            return False
-        
-        points_world, colors = self._process_lidar_data(lidar_data)
-        if points_world is None or colors is None:
-            # Clear existing points if no new data to prevent stale display
-            self.point_cloud_o3d.points = o3d.utility.Vector3dVector()
-            self.point_cloud_o3d.colors = o3d.utility.Vector3dVector()
-        else:
-            self.point_cloud_o3d.points = o3d.utility.Vector3dVector(points_world)
-            self.point_cloud_o3d.colors = o3d.utility.Vector3dVector(colors)
-
-        if not self.is_initialized:
-            self.vis.add_geometry(self.point_cloud_o3d)
-            self.is_initialized = True
-            # Add a small coordinate frame at world origin if desired
-            # coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=1.0, origin=[0, 0, 0])
-            # self.vis.add_geometry(coord_frame)
-        else:
-            self.vis.update_geometry(self.point_cloud_o3d)
-        
-        self._set_camera_view(ego_transform)
-        
-        # Process window events and render one frame
-        self.vis.poll_events()
-        self.vis.update_renderer()
-        return self.vis.get_window_geometry().is_visible # Return true if window is still open
-
     def _set_camera_view(self, ego_transform: carla.Transform):
+        if not self.vis: return # Called from thread, self.vis might be None if window creation failed or closing
         if not self.view_control:
             self.view_control = self.vis.get_view_control()
             if not self.view_control: return
@@ -248,11 +291,24 @@ class Open3DLidarVisualizer:
 
     def close(self):
         if self._active:
-            self.vis.destroy_window()
-            self._active = False
-            self.is_initialized = False
+            self._stop_event.set() # Signal thread to stop
+            # Put a sentinel on the queue to ensure the thread wakes up if blocked on get()
+            try: self._data_queue.put_nowait((None, None)) 
+            except queue.Full: pass # If full, thread will eventually timeout or see stop_event
+            
+            if self._vis_thread and self._vis_thread.is_alive():
+                self._vis_thread.join(timeout=1.0) # Wait for thread to finish
+                if self._vis_thread.is_alive():
+                    logger.warning("Open3D visualization thread did not terminate in time.")
+            self._active = False # Explicitly set inactive here
+            self.is_initialized_in_thread = False
             self.view_control = None
-            logger.info("Open3D Lidar window closed.")
+            self.vis = None # Thread should have called destroy_window and cleared this
+            logger.info("Open3D Lidar visualizer close requested, thread signaled/joined.")
+        # Ensure queue is clear for next activation if any stale data
+        while not self._data_queue.empty():
+            try: self._data_queue.get_nowait()
+            except queue.Empty: break
 
 # Example of how this might be used (external to the class):
 # if __name__ == '__main__':
