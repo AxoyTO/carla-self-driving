@@ -10,6 +10,10 @@ def parse_arguments():
         formatter_class=argparse.RawTextHelpFormatter
     )
     
+    # --- CARLA Installation Path ---
+    parser.add_argument("--carla-root", type=str, default=config.CARLA_ROOT,
+                        help=f"Path to the CARLA simulator root directory (default: {config.CARLA_ROOT})")
+
     # --- General Training Arguments ---
     parser.add_argument("--log-level", type=str, default=config.LOG_LEVEL,
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
