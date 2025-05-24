@@ -183,6 +183,184 @@ class RewardCalculator:
         
         return reward, on_sidewalk_flag
 
+    def _calculate_sidewalk_penalty_only(self, vehicle, current_location, carla_map, lane_invasion_event) -> Tuple[float, bool]:
+        """
+        Extracts only sidewalk detection logic to apply to all reward types.
+        Returns (sidewalk_penalty, on_sidewalk_flag)
+        """
+        reward = 0.0
+        on_sidewalk_flag = False
+
+        if not carla_map:
+            return reward, on_sidewalk_flag
+
+        # 1. Prioritize Lane Invasion for Curb Detection
+        if lane_invasion_event:
+            for marking in lane_invasion_event.crossed_lane_markings:
+                if marking.type == carla.LaneMarkingType.Curb:
+                    reward += self.PENALTY_SIDEWALK
+                    on_sidewalk_flag = True
+                    logger.debug(f"Sidewalk detected: Curb crossing via lane invasion event")
+                    break
+
+        # 2. Check for direct sidewalk lane type
+        if not on_sidewalk_flag:
+            current_waypoint_at_location = carla_map.get_waypoint(current_location, project_to_road=False) 
+            if current_waypoint_at_location and current_waypoint_at_location.lane_type == carla.LaneType.Sidewalk:
+                reward += self.PENALTY_SIDEWALK
+                on_sidewalk_flag = True
+                logger.debug(f"Sidewalk detected: Direct sidewalk lane type")
+
+        # 3. Alternative detection: Distance and height-based sidewalk detection
+        if not on_sidewalk_flag:
+            projected_driving_wp = carla_map.get_waypoint(current_location, project_to_road=True, lane_type=carla.LaneType.Driving)
+            
+            if projected_driving_wp:
+                distance_to_road = current_location.distance(projected_driving_wp.transform.location)
+                height_diff = current_location.z - projected_driving_wp.transform.location.z
+                
+                # Check if we're in a legitimate lane change scenario first
+                is_legitimate_lane_change = False
+                if lane_invasion_event:
+                    # If we have lane invasion but no curb markings, it's likely a legitimate lane change
+                    has_curb_marking = any(marking.type == carla.LaneMarkingType.Curb 
+                                         for marking in lane_invasion_event.crossed_lane_markings)
+                    has_crossable_marking = any(marking.type in [carla.LaneMarkingType.Broken, 
+                                                               carla.LaneMarkingType.BrokenBroken,
+                                                               carla.LaneMarkingType.BrokenSolid] 
+                                              for marking in lane_invasion_event.crossed_lane_markings)
+                    if has_crossable_marking and not has_curb_marking:
+                        is_legitimate_lane_change = True
+                        logger.debug("Skipping sidewalk detection: legitimate lane change detected")
+
+                # Use different thresholds based on lane change scenario
+                if is_legitimate_lane_change:
+                    # Very conservative thresholds during lane changes to avoid false positives
+                    SIDEWALK_DISTANCE_THRESHOLD = 3.0
+                    SIDEWALK_HEIGHT_THRESHOLD = 0.2
+                    CURB_EDGE_DISTANCE = 1.5
+                else:
+                    # More sensitive thresholds for actual curb detection
+                    SIDEWALK_DISTANCE_THRESHOLD = 1.8  # meters from road
+                    SIDEWALK_HEIGHT_THRESHOLD = 0.08   # meters above road (lowered for better curb detection)
+                    CURB_EDGE_DISTANCE = 0.8           # meters
+                
+                # Check for nearby driving lanes
+                nearby_driving_lanes = self._check_nearby_driving_lanes(carla_map, current_location)
+                min_distance_to_any_driving_lane = min(nearby_driving_lanes) if nearby_driving_lanes else distance_to_road
+                
+                is_on_sidewalk = False
+                detection_reason = ""
+                
+                if is_legitimate_lane_change:
+                    # Very strict detection during lane changes
+                    if (min_distance_to_any_driving_lane > SIDEWALK_DISTANCE_THRESHOLD and 
+                        height_diff > SIDEWALK_HEIGHT_THRESHOLD):
+                        is_on_sidewalk = True
+                        detection_reason = f"far from all driving lanes and elevated (during lane change)"
+                else:
+                    # More sensitive detection for actual curb violations
+                    if distance_to_road > SIDEWALK_DISTANCE_THRESHOLD:
+                        is_on_sidewalk = True
+                        detection_reason = f"far from road"
+                    elif height_diff > SIDEWALK_HEIGHT_THRESHOLD:
+                        is_on_sidewalk = True 
+                        detection_reason = f"elevated above road"
+                    elif distance_to_road > CURB_EDGE_DISTANCE and height_diff > 0.05:
+                        # Moderate distance + slight elevation = likely on curb
+                        is_on_sidewalk = True
+                        detection_reason = f"curb edge detection"
+                    elif distance_to_road > 0.5 and height_diff > SIDEWALK_HEIGHT_THRESHOLD * 0.6:
+                        # Reasonably close but notably elevated = likely on curb
+                        is_on_sidewalk = True
+                        detection_reason = f"close but elevated"
+                
+                if is_on_sidewalk:
+                    nearby_waypoints = self._check_nearby_waypoints(carla_map, current_location)
+                    is_legitimate_offroad = self._is_legitimate_offroad_area(nearby_waypoints)
+                    
+                    if not is_legitimate_offroad:
+                        reward += self.PENALTY_SIDEWALK
+                        on_sidewalk_flag = True
+                        logger.debug(f"Sidewalk detected: Alternative detection - {detection_reason}")
+
+        return reward, on_sidewalk_flag
+
+    def _calculate_lane_keeping_rewards_penalties_excluding_sidewalk(self, vehicle, current_location, carla_map, lane_invasion_event) -> Tuple[float, bool]:
+        """
+        Calculates lane keeping rewards/penalties but excludes sidewalk detection (handled separately).
+        Returns (lane_reward, dummy_sidewalk_flag) where dummy_sidewalk_flag is always False since sidewalk is handled elsewhere.
+        """
+        reward = 0.0
+        
+        if not carla_map:
+            return reward, False
+
+        # Skip sidewalk detection here since it's handled separately in _calculate_sidewalk_penalty_only
+        # Proceed directly with general off-road and lane keeping
+        
+        projected_driving_wp = carla_map.get_waypoint(current_location, project_to_road=True, lane_type=carla.LaneType.Driving)
+        if projected_driving_wp and projected_driving_wp.transform:
+            if projected_driving_wp.lane_type != carla.LaneType.Driving: 
+                reward += self.PENALTY_OFFROAD # General offroad 
+                logger.debug(f"Penalty for general OFFROAD (projected to non-driving): {self.PENALTY_OFFROAD}")
+            else: # On a driving lane (by projection)
+                # Lane Centering
+                max_dev = projected_driving_wp.lane_width / 1.8 
+                lat_dist = current_location.distance(projected_driving_wp.transform.location) 
+                reward += self.LANE_CENTERING_REWARD_FACTOR * (1.0 - min(lat_dist / max_dev, 1.0)**2)
+
+                # Lane Orientation
+                v_fwd = vehicle.get_transform().get_forward_vector()
+                l_fwd = projected_driving_wp.transform.get_forward_vector()
+                v_fwd_2d = np.array([v_fwd.x, v_fwd.y])
+                l_fwd_2d = np.array([l_fwd.x, l_fwd.y])
+                norm_v = np.linalg.norm(v_fwd_2d)
+                norm_l = np.linalg.norm(l_fwd_2d)
+                if norm_v > 1e-4 and norm_l > 1e-4:
+                    dot_product = np.dot(v_fwd_2d, l_fwd_2d) / (norm_v * norm_l)
+                    angle_d = math.degrees(math.acos(np.clip(dot_product, -1.0, 1.0)))
+                    if angle_d > 20.0:
+                        reward -= self.LANE_ORIENTATION_PENALTY_FACTOR * (angle_d / 90.0)
+                
+                # Solid Lane Crossing (only if on driving lane)
+                if lane_invasion_event: # Re-check for other markings if on driving lane
+                    for marking in lane_invasion_event.crossed_lane_markings:
+                        # Check for solid lines, but skip curbs since they're handled in sidewalk detection
+                        if marking.type in [carla.LaneMarkingType.Solid, carla.LaneMarkingType.SolidSolid]:
+                            reward += self.PENALTY_SOLID_LANE_CROSS
+                            logger.debug(f"Penalty for crossing SOLID lane: {self.PENALTY_SOLID_LANE_CROSS}")
+                            # Don't break, could be multiple solid lines or other non-curb events.
+        else: # Cannot project to a driving lane (very off-road)
+            reward += self.PENALTY_OFFROAD 
+            logger.debug(f"Penalty for general OFFROAD (no projection): {self.PENALTY_OFFROAD}")
+        
+        return reward, False  # Always return False for sidewalk flag since it's handled separately
+
+    def _check_nearby_waypoints(self, carla_map, location, radius=5.0):
+        """Check waypoints in a radius around the location"""
+        waypoints = []
+        # Check waypoints in a small grid around the location
+        for dx in [-radius, 0, radius]:
+            for dy in [-radius, 0, radius]:
+                check_location = carla.Location(location.x + dx, location.y + dy, location.z)
+                wp = carla_map.get_waypoint(check_location, project_to_road=False)
+                if wp:
+                    waypoints.append(wp)
+        return waypoints
+
+    def _is_legitimate_offroad_area(self, waypoints):
+        """Check if the area represents a legitimate off-road area like parking"""
+        if not waypoints:
+            return False
+        
+        # Check if any nearby waypoints are parking, shoulder, or other legitimate off-road types
+        legitimate_types = [carla.LaneType.Parking, carla.LaneType.Shoulder]
+        for wp in waypoints:
+            if wp.lane_type in legitimate_types:
+                return True
+        return False
+
     def _calculate_stuck_reversing_penalty(self, current_speed_mps, is_reversing_action, intended_reverse_action, reward_type) -> float:
         reward = 0.0
         if reward_type == "phase0":
@@ -340,14 +518,22 @@ class RewardCalculator:
             current_speed_mps, is_reversing_control, intended_reverse_action, reward_type
         )
 
+        # --- Sidewalk Detection (apply to ALL reward types) ---
+        sidewalk_penalty, on_sidewalk_from_detection = self._calculate_sidewalk_penalty_only(
+            vehicle, current_location, carla_map, lane_invasion_event
+        )
+        total_reward += sidewalk_penalty
+        if on_sidewalk_from_detection: 
+            hud_on_sidewalk_flag = True
+
         if reward_type == "standard":
             total_reward += self._calculate_speed_reward(vehicle, current_speed_kmh, is_reversing_control)
             
-            lane_reward, on_sidewalk_from_lane_calc = self._calculate_lane_keeping_rewards_penalties(
+            # Apply remaining lane keeping rewards/penalties (excluding sidewalk which is handled above)
+            lane_reward, _ = self._calculate_lane_keeping_rewards_penalties_excluding_sidewalk(
                 vehicle, current_location, carla_map, lane_invasion_event
             )
             total_reward += lane_reward
-            if on_sidewalk_from_lane_calc: hud_on_sidewalk_flag = True
 
             total_reward += self._calculate_traffic_light_reward(
                 vehicle, relevant_traffic_light_state, current_speed_mps
@@ -394,3 +580,16 @@ class RewardCalculator:
         self.last_proximity_penalty_flag = hud_proximity_flag
 
         return total_reward, hud_collision_flag, hud_proximity_flag, hud_on_sidewalk_flag 
+
+    def _check_nearby_driving_lanes(self, carla_map, location, radius=3.0):
+        """Check distances to multiple nearby driving lanes to avoid false positives during lane changes"""
+        distances = []
+        # Check waypoints in a small grid around the location for driving lanes
+        for dx in [-radius, 0, radius]:
+            for dy in [-radius, 0, radius]:
+                check_location = carla.Location(location.x + dx, location.y + dy, location.z)
+                wp = carla_map.get_waypoint(check_location, project_to_road=True, lane_type=carla.LaneType.Driving)
+                if wp and wp.lane_type == carla.LaneType.Driving:
+                    distance = location.distance(wp.transform.location)
+                    distances.append(distance)
+        return distances 

@@ -234,8 +234,11 @@ class SensorManager:
             cb_env = self.env_ref()
             if cb_env:
                 cb_env.latest_sensor_data['lane_invasion_event'] = event
+            else:
+                self.logger.warning("Lane invasion sensor: Environment reference is None")
         lane_sensor.listen(lane_cb)
         self._add_sensor_to_list(lane_sensor, 'agent')
+        self.logger.info("Lane invasion sensor setup completed.")
 
     def _setup_spectator_camera(self):
         bp = camera_handler._setup_camera_blueprint(
