@@ -162,6 +162,30 @@ REWARD_CALC_MIN_SPEED_FOR_STEER_PENALTY_KMH = get_reward_config("min_speed_for_s
 
 REWARD_CALC_PENALTY_SOLID_LANE_CROSS = get_reward_config("penalty_solid_lane_cross", -40.0)
 REWARD_CALC_PENALTY_SIDEWALK = get_reward_config("penalty_sidewalk", -800.0)
+
+# Phase-Specific Sidewalk Detection Parameters
+SIDEWALK_DETECTION_STRAIGHT_PHASES = get_reward_config("sidewalk_detection.straight_phases", {
+    "distance_threshold": 1.2,
+    "height_threshold": 0.05, 
+    "curb_edge_distance": 0.6,
+    "allow_broken_line_crossings": False
+})
+
+SIDEWALK_DETECTION_STEERING_PHASES = get_reward_config("sidewalk_detection.steering_phases", {
+    "distance_threshold": 2.0,
+    "height_threshold": 0.12,
+    "curb_edge_distance": 1.5, 
+    "allow_broken_line_crossings": True,
+    "broken_line_grace_distance": 3.0
+})
+
+SIDEWALK_DETECTION_DEFAULT = get_reward_config("sidewalk_detection.default", {
+    "distance_threshold": 1.5,
+    "height_threshold": 0.08,
+    "curb_edge_distance": 0.8,
+    "allow_broken_line_crossings": True
+})
+
 STOP_AT_GOAL_SPEED_THRESHOLD = get_reward_config("stop_at_goal_speed_threshold", 0.2)
 
 # Phase 0 Specific Adjustments
@@ -181,6 +205,18 @@ NUM_DISCRETE_ACTIONS = len(DISCRETE_ACTION_MAP)
 
 # Curriculum Phases
 CARLA_DEFAULT_CURRICULUM_PHASES = get_curriculum_config("default_phases", [])
+
+# Curriculum Evaluation Settings
+CURRICULUM_EVALUATION_ENABLED = get_curriculum_config("evaluation.enabled", True)
+CURRICULUM_EVALUATION_EPISODES = get_curriculum_config("evaluation.episodes_per_evaluation", 5)
+CURRICULUM_MAX_PHASE_REPEATS = get_curriculum_config("evaluation.max_phase_repeats", 3)
+CURRICULUM_COMPLETION_CRITERIA = get_curriculum_config("evaluation.completion_criteria", {
+    "min_goal_completion_rate": 0.6,
+    "min_collision_free_rate": 0.8,
+    "min_sidewalk_free_rate": 0.9,
+    "max_violations_per_episode": 1.0,
+    "min_driving_score": 55.0
+})
 
 # --- Helper function to update config from args ---
 def update_config_from_args(config_module, args):

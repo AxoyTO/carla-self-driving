@@ -70,6 +70,11 @@ class RewardCalculator:
         self.phase0_offroad_penalty = config.REWARD_CALC_PHASE0_OFFROAD_PENALTY
         self.phase0_offroad_no_waypoint_multiplier = config.REWARD_CALC_PHASE0_OFFROAD_NO_WAYPOINT_MULTIPLIER
 
+        # Load phase-specific sidewalk detection parameters
+        self.sidewalk_detection_straight = config.SIDEWALK_DETECTION_STRAIGHT_PHASES
+        self.sidewalk_detection_steering = config.SIDEWALK_DETECTION_STEERING_PHASES
+        self.sidewalk_detection_default = config.SIDEWALK_DETECTION_DEFAULT
+
         # Allow reward_configs dictionary to override any of the above loaded from config
         # This provides flexibility for per-phase specific overrides passed via curriculum
         for key, value in self.reward_configs.items():
@@ -79,6 +84,17 @@ class RewardCalculator:
             elif hasattr(self, key): # Match direct attribute name (e.g. phase0_penalty_per_step)
                 setattr(self, key, value)
                 logger.info(f"RewardCalculator: Overriding '{key}' with {value} from reward_configs.")
+
+        # Initialize sidewalk detection details
+        self.last_sidewalk_detection_details = {
+            'detected': False,
+            'method': 'none',
+            'distance_to_road': 0.0,
+            'height_difference': 0.0,
+            'detection_reason': '',
+            'thresholds_used': {},
+            'is_lane_change': False
+        }
 
     def _calculate_distance_goal_reward(self, current_location, previous_location, target_waypoint, reward_type, current_speed_mps, require_stop) -> float:
         reward = 0.0
@@ -93,15 +109,20 @@ class RewardCalculator:
 
         if reward_type == "phase0":
             if dist_reduction > 0.01: # More sensitive for phase0
-                reward += dist_reduction * self.REWARD_DISTANCE_FACTOR * self.phase0_distance_factor_multiplier
+                distance_component = dist_reduction * self.REWARD_DISTANCE_FACTOR * self.phase0_distance_factor_multiplier
+                reward += distance_component
             elif dist_reduction < -0.1: # Penalize moving away more strongly in phase0
-                reward -= abs(dist_reduction) * self.REWARD_DISTANCE_FACTOR * 0.5 # Standard factor for moving away
+                distance_penalty = abs(dist_reduction) * self.REWARD_DISTANCE_FACTOR * 0.5 # Standard factor for moving away
+                reward -= distance_penalty
             if dist_to_target < self.WAYPOINT_REACHED_THRESHOLD and stop_ok:
-                reward += self.REWARD_GOAL_REACHED * self.phase0_goal_reward_multiplier
+                goal_reward = self.REWARD_GOAL_REACHED * self.phase0_goal_reward_multiplier
+                reward += goal_reward
         elif reward_type == "standard":
-            reward += dist_reduction * self.REWARD_DISTANCE_FACTOR
+            distance_component = dist_reduction * self.REWARD_DISTANCE_FACTOR
+            reward += distance_component
             if dist_to_target < self.WAYPOINT_REACHED_THRESHOLD and stop_ok:
                 reward += self.REWARD_GOAL_REACHED
+        
         return reward
 
     def _calculate_speed_reward(self, vehicle, current_speed_kmh, is_reversing_action) -> float:
@@ -131,7 +152,6 @@ class RewardCalculator:
                 if marking.type == carla.LaneMarkingType.Curb:
                     reward += self.PENALTY_SIDEWALK  # Apply the strong sidewalk penalty
                     on_sidewalk_flag = True
-                    logger.debug(f"Penalty for CURB crossing via lane_invasion_event: {self.PENALTY_SIDEWALK}")
                     break # Curb crossing is definitive for sidewalk penalty this step
         
         # 2. If no curb was hit, check for direct sidewalk lane type
@@ -140,7 +160,6 @@ class RewardCalculator:
             if current_waypoint_at_location and current_waypoint_at_location.lane_type == carla.LaneType.Sidewalk:
                 reward += self.PENALTY_SIDEWALK # Apply penalty
                 on_sidewalk_flag = True      # Set flag
-                logger.debug(f"Penalty for being directly on SIDEWALK lane type (no curb event): {self.PENALTY_SIDEWALK}")
 
         # 3. If still not flagged for sidewalk, proceed with general off-road and lane keeping
         if not on_sidewalk_flag:
@@ -148,7 +167,6 @@ class RewardCalculator:
             if projected_driving_wp and projected_driving_wp.transform:
                 if projected_driving_wp.lane_type != carla.LaneType.Driving: 
                     reward += self.PENALTY_OFFROAD # General offroad if not on sidewalk
-                    logger.debug(f"Penalty for general OFFROAD (projected to non-driving): {self.PENALTY_OFFROAD}")
                 else: # On a driving lane (by projection)
                     # Lane Centering
                     max_dev = projected_driving_wp.lane_width / 1.8 
@@ -175,114 +193,155 @@ class RewardCalculator:
                             # (though it shouldn't be if the first block for curb detection ran)
                             if marking.type in [carla.LaneMarkingType.Solid, carla.LaneMarkingType.SolidSolid]:
                                 reward += self.PENALTY_SOLID_LANE_CROSS
-                                logger.debug(f"Penalty for crossing SOLID lane: {self.PENALTY_SOLID_LANE_CROSS}")
                                 # Don't break, could be multiple solid lines or other non-curb events.
             else: # Cannot project to a driving lane (very off-road) AND not on sidewalk
                 reward += self.PENALTY_OFFROAD 
-                logger.debug(f"Penalty for general OFFROAD (no projection): {self.PENALTY_OFFROAD}")
         
         return reward, on_sidewalk_flag
 
     def _calculate_sidewalk_penalty_only(self, vehicle, current_location, carla_map, lane_invasion_event) -> Tuple[float, bool]:
         """
-        Extracts only sidewalk detection logic to apply to all reward types.
+        Phase-aware sidewalk detection that distinguishes between legitimate lane changes and actual curb violations.
         Returns (sidewalk_penalty, on_sidewalk_flag)
         """
         reward = 0.0
         on_sidewalk_flag = False
+        
+        # Get phase-specific detection parameters
+        phase_type, detection_params = self._get_current_phase_type_and_detection_params()
+        
+        # Store detailed detection info for debug logging
+        self.last_sidewalk_detection_details = {
+            'detected': False,
+            'method': 'none',
+            'distance_to_road': 0.0,
+            'height_difference': 0.0,
+            'detection_reason': '',
+            'thresholds_used': detection_params.copy(),
+            'is_lane_change': False,
+            'phase_type': phase_type,
+            'lane_change_analysis': ''
+        }
 
         if not carla_map:
             return reward, on_sidewalk_flag
 
-        # 1. Prioritize Lane Invasion for Curb Detection
+        # 1. PRIORITY: Direct curb detection via lane invasion sensor
         if lane_invasion_event:
             for marking in lane_invasion_event.crossed_lane_markings:
                 if marking.type == carla.LaneMarkingType.Curb:
                     reward += self.PENALTY_SIDEWALK
                     on_sidewalk_flag = True
-                    logger.debug(f"Sidewalk detected: Curb crossing via lane invasion event")
-                    break
+                    self.last_sidewalk_detection_details.update({
+                        'detected': True,
+                        'method': 'curb_lane_invasion',
+                        'detection_reason': 'Direct curb marking crossed via lane invasion sensor',
+                        'is_lane_change': False
+                    })
+                    logger.debug(f"Sidewalk detected: Direct curb crossing (phase: {phase_type})")
+                    return reward, on_sidewalk_flag
 
         # 2. Check for direct sidewalk lane type
-        if not on_sidewalk_flag:
-            current_waypoint_at_location = carla_map.get_waypoint(current_location, project_to_road=False) 
-            if current_waypoint_at_location and current_waypoint_at_location.lane_type == carla.LaneType.Sidewalk:
-                reward += self.PENALTY_SIDEWALK
-                on_sidewalk_flag = True
-                logger.debug(f"Sidewalk detected: Direct sidewalk lane type")
+        current_waypoint_at_location = carla_map.get_waypoint(current_location, project_to_road=False) 
+        if current_waypoint_at_location and current_waypoint_at_location.lane_type == carla.LaneType.Sidewalk:
+            reward += self.PENALTY_SIDEWALK
+            on_sidewalk_flag = True
+            self.last_sidewalk_detection_details.update({
+                'detected': True,
+                'method': 'direct_sidewalk_lane',
+                'detection_reason': 'Vehicle located directly on sidewalk lane type',
+                'is_lane_change': False
+            })
+            logger.debug(f"Sidewalk detected: Direct sidewalk lane type (phase: {phase_type})")
+            return reward, on_sidewalk_flag
 
-        # 3. Alternative detection: Distance and height-based sidewalk detection
-        if not on_sidewalk_flag:
-            projected_driving_wp = carla_map.get_waypoint(current_location, project_to_road=True, lane_type=carla.LaneType.Driving)
+        # 3. ADVANCED: Phase-aware geometric detection with lane change analysis
+        projected_driving_wp = carla_map.get_waypoint(current_location, project_to_road=True, lane_type=carla.LaneType.Driving)
+        
+        if projected_driving_wp:
+            distance_to_road = current_location.distance(projected_driving_wp.transform.location)
+            height_diff = current_location.z - projected_driving_wp.transform.location.z
             
-            if projected_driving_wp:
-                distance_to_road = current_location.distance(projected_driving_wp.transform.location)
-                height_diff = current_location.z - projected_driving_wp.transform.location.z
+            # Store basic measurements
+            self.last_sidewalk_detection_details.update({
+                'distance_to_road': distance_to_road,
+                'height_difference': height_diff
+            })
+            
+            # Advanced lane change analysis
+            is_legitimate_lane_change, lane_change_reason = self._is_legitimate_lane_change_advanced(
+                lane_invasion_event, detection_params, distance_to_road
+            )
+            
+            self.last_sidewalk_detection_details.update({
+                'is_lane_change': is_legitimate_lane_change,
+                'lane_change_analysis': lane_change_reason
+            })
+            
+            # Get phase-specific thresholds
+            distance_threshold = detection_params.get('distance_threshold', 1.5)
+            height_threshold = detection_params.get('height_threshold', 0.08)
+            curb_edge_distance = detection_params.get('curb_edge_distance', 0.8)
+            
+            # If it's a legitimate lane change, use more permissive detection
+            if is_legitimate_lane_change:
+                logger.debug(f"Legitimate lane change detected: {lane_change_reason} (phase: {phase_type})")
                 
-                # Check if we're in a legitimate lane change scenario first
-                is_legitimate_lane_change = False
-                if lane_invasion_event:
-                    # If we have lane invasion but no curb markings, it's likely a legitimate lane change
-                    has_curb_marking = any(marking.type == carla.LaneMarkingType.Curb 
-                                         for marking in lane_invasion_event.crossed_lane_markings)
-                    has_crossable_marking = any(marking.type in [carla.LaneMarkingType.Broken, 
-                                                               carla.LaneMarkingType.BrokenBroken,
-                                                               carla.LaneMarkingType.BrokenSolid] 
-                                              for marking in lane_invasion_event.crossed_lane_markings)
-                    if has_crossable_marking and not has_curb_marking:
-                        is_legitimate_lane_change = True
-                        logger.debug("Skipping sidewalk detection: legitimate lane change detected")
-
-                # Use different thresholds based on lane change scenario
-                if is_legitimate_lane_change:
-                    # Very conservative thresholds during lane changes to avoid false positives
-                    SIDEWALK_DISTANCE_THRESHOLD = 3.0
-                    SIDEWALK_HEIGHT_THRESHOLD = 0.2
-                    CURB_EDGE_DISTANCE = 1.5
+                # For legitimate lane changes, only flag obvious curb violations
+                # Use stricter thresholds to avoid false positives
+                distance_threshold *= 1.5  # More permissive distance
+                height_threshold *= 1.8    # More permissive height
+                
+                # Only check for clear curb violations during lane changes
+                if (distance_to_road > distance_threshold and height_diff > height_threshold):
+                    detection_reason = f"Curb violation during lane change: {distance_to_road:.2f}m > {distance_threshold:.2f}m AND {height_diff:.2f}m > {height_threshold:.2f}m"
                 else:
-                    # More sensitive thresholds for actual curb detection
-                    SIDEWALK_DISTANCE_THRESHOLD = 1.8  # meters from road
-                    SIDEWALK_HEIGHT_THRESHOLD = 0.08   # meters above road (lowered for better curb detection)
-                    CURB_EDGE_DISTANCE = 0.8           # meters
-                
-                # Check for nearby driving lanes
-                nearby_driving_lanes = self._check_nearby_driving_lanes(carla_map, current_location)
-                min_distance_to_any_driving_lane = min(nearby_driving_lanes) if nearby_driving_lanes else distance_to_road
-                
-                is_on_sidewalk = False
-                detection_reason = ""
-                
-                if is_legitimate_lane_change:
-                    # Very strict detection during lane changes
-                    if (min_distance_to_any_driving_lane > SIDEWALK_DISTANCE_THRESHOLD and 
-                        height_diff > SIDEWALK_HEIGHT_THRESHOLD):
-                        is_on_sidewalk = True
-                        detection_reason = f"far from all driving lanes and elevated (during lane change)"
-                else:
-                    # More sensitive detection for actual curb violations
-                    if distance_to_road > SIDEWALK_DISTANCE_THRESHOLD:
-                        is_on_sidewalk = True
-                        detection_reason = f"far from road"
-                    elif height_diff > SIDEWALK_HEIGHT_THRESHOLD:
-                        is_on_sidewalk = True 
-                        detection_reason = f"elevated above road"
-                    elif distance_to_road > CURB_EDGE_DISTANCE and height_diff > 0.05:
-                        # Moderate distance + slight elevation = likely on curb
-                        is_on_sidewalk = True
-                        detection_reason = f"curb edge detection"
-                    elif distance_to_road > 0.5 and height_diff > SIDEWALK_HEIGHT_THRESHOLD * 0.6:
-                        # Reasonably close but notably elevated = likely on curb
-                        is_on_sidewalk = True
-                        detection_reason = f"close but elevated"
-                
-                if is_on_sidewalk:
-                    nearby_waypoints = self._check_nearby_waypoints(carla_map, current_location)
-                    is_legitimate_offroad = self._is_legitimate_offroad_area(nearby_waypoints)
+                    # Not a curb violation - legitimate lane change
+                    logger.debug(f"Lane change approved: {lane_change_reason}, distance: {distance_to_road:.2f}m, height: {height_diff:.2f}m (phase: {phase_type})")
+                    return reward, on_sidewalk_flag
                     
-                    if not is_legitimate_offroad:
-                        reward += self.PENALTY_SIDEWALK
-                        on_sidewalk_flag = True
-                        logger.debug(f"Sidewalk detected: Alternative detection - {detection_reason}")
+            else:
+                # Not a legitimate lane change - apply normal strict detection
+                logger.debug(f"Not a legitimate lane change: {lane_change_reason}, applying strict detection (phase: {phase_type})")
+                
+                detection_reason = ""
+                is_violation = False
+                
+                # Multiple detection criteria based on phase
+                if distance_to_road > distance_threshold:
+                    detection_reason = f"Far from driving lane: {distance_to_road:.2f}m > {distance_threshold:.2f}m"
+                    is_violation = True
+                elif height_diff > height_threshold:
+                    detection_reason = f"Elevated above road: {height_diff:.2f}m > {height_threshold:.2f}m"
+                    is_violation = True
+                elif (distance_to_road > curb_edge_distance and height_diff > height_threshold * 0.5):
+                    detection_reason = f"Curb edge detection: {distance_to_road:.2f}m > {curb_edge_distance:.2f}m + {height_diff:.2f}m elevation"
+                    is_violation = True
+                elif (distance_to_road > curb_edge_distance * 0.6 and height_diff > height_threshold * 0.8):
+                    detection_reason = f"Close elevated detection: {distance_to_road:.2f}m + {height_diff:.2f}m elevation"
+                    is_violation = True
+                
+                if not is_violation:
+                    return reward, on_sidewalk_flag  # No violation detected
+                
+            # Check if this is a legitimate off-road area (parking, etc.)
+            nearby_waypoints = self._check_nearby_waypoints(carla_map, current_location)
+            is_legitimate_offroad = self._is_legitimate_offroad_area(nearby_waypoints)
+            
+            if is_legitimate_offroad:
+                logger.debug(f"Legitimate off-road area detected, ignoring violation (phase: {phase_type})")
+                return reward, on_sidewalk_flag
+                
+            # Apply the penalty
+            reward += self.PENALTY_SIDEWALK
+            on_sidewalk_flag = True
+            self.last_sidewalk_detection_details.update({
+                'detected': True,
+                'method': 'phase_aware_geometric',
+                'detection_reason': detection_reason
+            })
+            
+            logger.debug(f"Sidewalk violation detected (phase: {phase_type}): {detection_reason}")
 
         return reward, on_sidewalk_flag
 
@@ -303,7 +362,6 @@ class RewardCalculator:
         if projected_driving_wp and projected_driving_wp.transform:
             if projected_driving_wp.lane_type != carla.LaneType.Driving: 
                 reward += self.PENALTY_OFFROAD # General offroad 
-                logger.debug(f"Penalty for general OFFROAD (projected to non-driving): {self.PENALTY_OFFROAD}")
             else: # On a driving lane (by projection)
                 # Lane Centering
                 max_dev = projected_driving_wp.lane_width / 1.8 
@@ -329,11 +387,9 @@ class RewardCalculator:
                         # Check for solid lines, but skip curbs since they're handled in sidewalk detection
                         if marking.type in [carla.LaneMarkingType.Solid, carla.LaneMarkingType.SolidSolid]:
                             reward += self.PENALTY_SOLID_LANE_CROSS
-                            logger.debug(f"Penalty for crossing SOLID lane: {self.PENALTY_SOLID_LANE_CROSS}")
                             # Don't break, could be multiple solid lines or other non-curb events.
         else: # Cannot project to a driving lane (very off-road)
             reward += self.PENALTY_OFFROAD 
-            logger.debug(f"Penalty for general OFFROAD (no projection): {self.PENALTY_OFFROAD}")
         
         return reward, False  # Always return False for sidewalk flag since it's handled separately
 
@@ -363,26 +419,35 @@ class RewardCalculator:
 
     def _calculate_stuck_reversing_penalty(self, current_speed_mps, is_reversing_action, intended_reverse_action, reward_type) -> float:
         reward = 0.0
+        
         if reward_type == "phase0":
             # Simplified stuck/reversing for phase0
             if current_speed_mps < self.MIN_FORWARD_SPEED_THRESHOLD * 0.25 and not is_reversing_action:
-                reward += self.phase0_stuck_penalty_base * self.phase0_stuck_multiplier_stuck
+                stuck_penalty = self.phase0_stuck_penalty_base * self.phase0_stuck_multiplier_stuck
+                reward += stuck_penalty
             elif current_speed_mps < 0 and not is_reversing_action: # Moving backward without reverse gear
-                reward += self.phase0_stuck_penalty_base * self.phase0_stuck_multiplier_reversing
+                reversing_penalty = self.phase0_stuck_penalty_base * self.phase0_stuck_multiplier_reversing
+                reward += reversing_penalty
             # Phase0 also has a small reward for any forward motion
             if current_speed_mps > self.MIN_FORWARD_SPEED_THRESHOLD * 0.5 and not is_reversing_action:
-                reward += 0.1 # Small incentive to move forward
+                forward_reward = 0.1
+                reward += forward_reward
         elif reward_type == "standard":
             if is_reversing_action: 
                 if not intended_reverse_action: # Reversing when not intended (e.g. action was not reverse)
-                    reward += self.PENALTY_STUCK_OR_REVERSING_BASE * 1.5 
-                elif current_speed_mps > -self.MIN_FORWARD_SPEED_THRESHOLD : # Intended reverse, but not moving much
-                    reward += self.PENALTY_STUCK_OR_REVERSING_BASE / 2 
+                    unintended_reverse_penalty = self.PENALTY_STUCK_OR_REVERSING_BASE * 1.5
+                    reward += unintended_reverse_penalty
+                elif current_speed_mps > -self.MIN_FORWARD_SPEED_THRESHOLD: # Intended reverse, but not moving much
+                    slow_reverse_penalty = self.PENALTY_STUCK_OR_REVERSING_BASE / 2
+                    reward += slow_reverse_penalty
             elif not is_reversing_action: # Not in reverse gear
                 if -self.MIN_FORWARD_SPEED_THRESHOLD < current_speed_mps < self.MIN_FORWARD_SPEED_THRESHOLD: # Stuck (low speed)
-                    reward += self.PENALTY_STUCK_OR_REVERSING_BASE
+                    stuck_penalty = self.PENALTY_STUCK_OR_REVERSING_BASE
+                    reward += stuck_penalty
                 elif current_speed_mps < -self.MIN_FORWARD_SPEED_THRESHOLD: # Moving backward without reverse gear
-                    reward += self.PENALTY_STUCK_OR_REVERSING_BASE * 3
+                    backward_penalty = self.PENALTY_STUCK_OR_REVERSING_BASE * 3
+                    reward += backward_penalty
+        
         return reward
 
     def _calculate_traffic_light_reward(self, vehicle, relevant_traffic_light_state, current_speed_mps) -> float:
@@ -502,9 +567,11 @@ class RewardCalculator:
         # --- Goal and Distance Rewards --- 
         current_phase_config = env.curriculum_manager.get_current_phase_config() if env.curriculum_manager else {}
         require_stop_at_goal = current_phase_config.get("require_stop_at_goal", False)
-        total_reward += self._calculate_distance_goal_reward(
+        distance_reward = self._calculate_distance_goal_reward(
             current_location, previous_location, target_waypoint, reward_type, current_speed_mps, require_stop_at_goal
         )
+        total_reward += distance_reward
+
         if segment_target_reached and reward_type == "standard":
             is_not_final_goal = True
             if distance_to_final_goal is not None and distance_to_final_goal < self.WAYPOINT_REACHED_THRESHOLD:
@@ -579,7 +646,7 @@ class RewardCalculator:
         self.last_on_sidewalk_flag = hud_on_sidewalk_flag
         self.last_proximity_penalty_flag = hud_proximity_flag
 
-        return total_reward, hud_collision_flag, hud_proximity_flag, hud_on_sidewalk_flag 
+        return total_reward, hud_collision_flag, hud_proximity_flag, hud_on_sidewalk_flag
 
     def _check_nearby_driving_lanes(self, carla_map, location, radius=3.0):
         """Check distances to multiple nearby driving lanes to avoid false positives during lane changes"""
@@ -593,3 +660,93 @@ class RewardCalculator:
                     distance = location.distance(wp.transform.location)
                     distances.append(distance)
         return distances 
+
+    def _get_current_phase_type_and_detection_params(self):
+        """
+        Determine the current phase type and return appropriate sidewalk detection parameters.
+        
+        Returns:
+            Tuple of (phase_type, detection_params) where:
+            - phase_type: 'straight', 'steering', or 'default'
+            - detection_params: Dictionary with detection thresholds
+        """
+        env = self.carla_env_ref() if self.carla_env_ref else None
+        
+        if not env or not hasattr(env, 'curriculum_manager') or not env.curriculum_manager:
+            return 'default', self.sidewalk_detection_default
+            
+        current_phase_config = env.curriculum_manager.get_current_phase_config()
+        if not current_phase_config:
+            return 'default', self.sidewalk_detection_default
+            
+        phase_name = current_phase_config.get('name', '').lower()
+        spawn_config = current_phase_config.get('spawn_config', '').lower()
+        
+        # Determine phase type based on phase name and spawn config
+        if ('straight' in phase_name or 'phase0' in phase_name or 
+            spawn_config == 'fixed_straight' or 'basic' in phase_name):
+            return 'straight', self.sidewalk_detection_straight
+        elif ('turn' in phase_name or 'steer' in phase_name or 
+              spawn_config in ['fixed_simple_turns', 'random'] or 
+              'steering' in phase_name or 'complex' in phase_name):
+            return 'steering', self.sidewalk_detection_steering
+        else:
+            return 'default', self.sidewalk_detection_default
+
+    def _is_legitimate_lane_change_advanced(self, lane_invasion_event, detection_params, distance_to_road):
+        """
+        Advanced detection of legitimate lane changes vs actual curb violations.
+        
+        Args:
+            lane_invasion_event: CARLA lane invasion event
+            detection_params: Phase-specific detection parameters
+            distance_to_road: Distance from vehicle to nearest driving lane
+            
+        Returns:
+            Tuple of (is_legitimate, reason)
+        """
+        if not lane_invasion_event:
+            return False, "no_lane_invasion_event"
+            
+        # If phase doesn't allow broken line crossings, any lane invasion is suspicious
+        if not detection_params.get('allow_broken_line_crossings', True):
+            return False, "phase_disallows_lane_changes"
+            
+        markings = lane_invasion_event.crossed_lane_markings
+        if not markings:
+            return False, "no_markings_in_event"
+            
+        # Analyze the types of markings crossed
+        has_curb = any(marking.type == carla.LaneMarkingType.Curb for marking in markings)
+        has_solid = any(marking.type in [carla.LaneMarkingType.Solid, carla.LaneMarkingType.SolidSolid] for marking in markings)
+        has_broken = any(marking.type in [carla.LaneMarkingType.Broken, carla.LaneMarkingType.BrokenBroken] for marking in markings)
+        has_crossable = any(marking.type in [carla.LaneMarkingType.Broken, carla.LaneMarkingType.BrokenBroken, carla.LaneMarkingType.BrokenSolid] for marking in markings)
+        
+        # If curb is involved, it's definitely not a legitimate lane change
+        if has_curb:
+            return False, "curb_marking_detected"
+            
+        # If only broken/crossable lines and reasonable distance, it's likely legitimate
+        if has_crossable and not has_solid and not has_curb:
+            grace_distance = detection_params.get('broken_line_grace_distance', 3.0)
+            if distance_to_road <= grace_distance:
+                return True, f"legitimate_broken_line_crossing_within_{grace_distance}m"
+        
+        # If solid lines are crossed, it's not legitimate (unless very close to road)
+        if has_solid and distance_to_road > 1.0:
+            return False, "solid_line_crossing_far_from_road"
+            
+        # Mixed case: has both crossable and non-crossable markings
+        if has_crossable and has_solid:
+            # Could be crossing from broken to solid lane - allow if close to road
+            grace_distance = detection_params.get('broken_line_grace_distance', 3.0) * 0.7  # Reduce grace
+            if distance_to_road <= grace_distance:
+                return True, f"mixed_marking_crossing_within_{grace_distance:.1f}m"
+            else:
+                return False, f"mixed_marking_crossing_too_far_{distance_to_road:.1f}m"
+        
+        # Default: if we have any crossable markings and reasonable distance, allow it
+        if has_crossable:
+            return True, "default_crossable_marking_allowance"
+            
+        return False, "no_crossable_markings_found" 

@@ -7,7 +7,7 @@ import weakref
 import math
 import numpy as np
 import carla
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -273,12 +273,13 @@ class CarlaEnv(BaseEnv):
         if self.discrete_actions:
             current_phase_cfg = self.curriculum_manager.get_current_phase_config()
             allow_reverse = current_phase_cfg.get("allow_reverse", False) if current_phase_cfg else False
+            allow_steering = current_phase_cfg.get("allow_steering", True) if current_phase_cfg else True
             
             # Get control and action name from the utility function
-            # We don't need to pass the maps if the util function imports config directly
             final_control, action_name_for_debug, effective_action_idx = action_utils.get_vehicle_control_from_discrete_action(
                 action_index=action, 
-                allow_reverse=allow_reverse
+                allow_reverse=allow_reverse,
+                allow_steering=allow_steering
             )
             self.current_action_debug = f"{action_name_for_debug} ({action})" # Log with original action index for clarity
         
@@ -296,7 +297,7 @@ class CarlaEnv(BaseEnv):
             
         vehicle.apply_control(final_control)
         # Store the effective action index (remapped if unknown) or the raw continuous action for reward calculation
-        self.current_action_for_reward = effective_action_idx if self.discrete_actions else action 
+        self.current_action_for_reward = effective_action_idx if self.discrete_actions else action
 
     def _update_debug_info(self):
         vehicle = self.vehicle_manager.get_vehicle()
@@ -376,11 +377,27 @@ class CarlaEnv(BaseEnv):
             self.logger.warning("GRP not available or start/target missing. Cannot generate global plan. Will use direct target.")
 
         if self.global_plan:
-            self.target_waypoint = self.global_plan[0][0] # First waypoint of the plan
+            # Find the first waypoint that's far enough from spawn to avoid immediate goal-reached rewards
+            min_distance_to_first_target = self.reward_calculator.WAYPOINT_REACHED_THRESHOLD * 2.0  # Use 2x threshold as minimum
+            self.target_waypoint = None
+            
+            for i, (waypoint, road_option) in enumerate(self.global_plan):
+                distance_from_spawn = waypoint.transform.location.distance(start_spawn_transform.location)
+                if distance_from_spawn >= min_distance_to_first_target:
+                    self.target_waypoint = waypoint
+                    self.current_global_plan_segment_index = i
+                    self.logger.debug(f"Selected waypoint {i} as first target (distance: {distance_from_spawn:.2f}m from spawn)")
+                    break
+            
+            # If no waypoint in the plan is far enough, use the final destination directly
+            if self.target_waypoint is None:
+                self.target_waypoint = final_destination_waypoint
+                self.current_global_plan_segment_index = len(self.global_plan) - 1  # Point to last waypoint
+                self.logger.warning(f"No waypoint in global plan far enough from spawn. Using final destination as target.")
         else:
             # If no global plan (e.g., GRP failed or for very simple curriculum targets),
             # self.target_waypoint is the final_destination_waypoint itself.
-            self.target_waypoint = final_destination_waypoint 
+            self.target_waypoint = final_destination_waypoint
 
         new_vehicle = self.vehicle_manager.spawn_vehicle(start_spawn_transform)
         if not new_vehicle:
@@ -404,6 +421,8 @@ class CarlaEnv(BaseEnv):
             self.visualizer.reset_notifications() 
             # HUD should show the current segment target (self.target_waypoint)
             self.visualizer.update_goal_waypoint_debug(self.target_waypoint)
+            # Render the HUD immediately to show the true starting episode score of 0.0
+            self._render_pygame()
             
         self.logger.debug(f"Reset complete. Vehicle: {new_vehicle.id}. Final Curriculum Target: {final_destination_waypoint.transform.location}. Next GRP Target: {self.target_waypoint.transform.location if self.target_waypoint else 'N/A'}")
         return observation, {}
@@ -581,7 +600,62 @@ class CarlaEnv(BaseEnv):
         
         if self.reward_calculator.last_on_sidewalk_flag:
             info["termination_reason"] = "on_sidewalk"
+            
+            # Add detailed sidewalk detection information
+            if hasattr(self.reward_calculator, 'last_sidewalk_detection_details'):
+                details = self.reward_calculator.last_sidewalk_detection_details
+                
+                # Create comprehensive termination message with phase awareness
+                violation_summary = f"Sidewalk violation in {details.get('phase_type', 'unknown')} phase"
+                detection_method = details.get('method', 'unknown')
+                detection_reason = details.get('detection_reason', 'unknown')
+                
+                termination_details = [
+                    f"Detection: {detection_method}",
+                    f"Reason: {detection_reason}",
+                    f"Phase: {details.get('phase_type', 'unknown')}",
+                    f"Distance to road: {details.get('distance_to_road', 0):.2f}m",
+                    f"Height difference: {details.get('height_difference', 0):.2f}m"
+                ]
+                
+                # Add lane change analysis if available
+                lane_change_analysis = details.get('lane_change_analysis', '')
+                if lane_change_analysis:
+                    termination_details.append(f"Lane change analysis: {lane_change_analysis}")
+                
+                # Add threshold information for context
+                thresholds = details.get('thresholds_used', {})
+                if thresholds:
+                    threshold_info = []
+                    for key, value in thresholds.items():
+                        if isinstance(value, (int, float)):
+                            threshold_info.append(f"{key}: {value}")
+                        elif isinstance(value, bool):
+                            threshold_info.append(f"{key}: {value}")
+                    if threshold_info:
+                        termination_details.append(f"Thresholds: {', '.join(threshold_info)}")
+                
+                # Log with color coding based on phase type
+                phase_type = details.get('phase_type', 'unknown')
+                if phase_type == 'straight':
+                    self.logger.info(f"SIDEWALK TERMINATION (STRICT): {violation_summary}")
+                elif phase_type == 'steering':
+                    self.logger.info(f"SIDEWALK TERMINATION (PERMISSIVE): {violation_summary}")
+                else:
+                    self.logger.info(f"SIDEWALK TERMINATION: {violation_summary}")
+                
+                # Log detailed breakdown
+                for detail in termination_details:
+                    self.logger.info(f"   - {detail}")
+                    
+                # Additional context for steering phases
+                if phase_type == 'steering' and details.get('is_lane_change', False):
+                    self.logger.info(f"   NOTE: Detected during lane change in steering phase - confirmed curb violation")
+                elif phase_type == 'straight' and details.get('is_lane_change', False):
+                    self.logger.info(f"   NOTE: Lane change detected in straight-driving phase")
+            
             return True, info
+            
         if self.reward_calculator.last_collision_flag:
             info["termination_reason"] = "collision"
             return True, info

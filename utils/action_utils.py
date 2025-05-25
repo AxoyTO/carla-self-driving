@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+"""
+Action utilities for CARLA RL environment.
+
+This module provides utilities for handling discrete actions, including
+remapping actions when certain capabilities are disabled (e.g., reverse, steering).
+"""
+
 import carla
 import logging
 import os
@@ -17,57 +25,117 @@ import app.config as config
 
 logger = logging.getLogger(__name__)
 
-def get_vehicle_control_from_discrete_action(
-    action_index: int, 
-    allow_reverse: bool, 
-    action_map: Dict[int, Dict[str, Any]] = config.DISCRETE_ACTION_MAP, 
-    no_reverse_action_map: Dict[int, Dict[str, Any]] = config.DISCRETE_ACTION_MAP_NO_REVERSE
-) -> Tuple[carla.VehicleControl, str, int]: # Returns control, action_name, effective_action_index
-    """ 
-    Converts a discrete action index into a carla.VehicleControl object and action name.
-
-    Args:
-        action_index: The integer action selected by the agent.
-        allow_reverse: Boolean flag from the current curriculum phase.
-        action_map: The primary dictionary mapping action indices to control parameters.
-        no_reverse_action_map: The alternative map for when reverse is disallowed.
-
-    Returns:
-        A tuple containing:
-            - carla.VehicleControl object.
-            - string: Name of the action for logging/debug.
-            - int: The effective action index (could be remapped if unknown).
+def get_vehicle_control_from_discrete_action(action_index: int, allow_reverse: bool = True, allow_steering: bool = True):
     """
-    control = carla.VehicleControl()  # Default: all zeros
-    action_to_use = action_index
+    Get vehicle control and action name from discrete action index.
     
-    current_map = action_map if allow_reverse else no_reverse_action_map
-    
-    action_params = current_map.get(action_index)
-    
-    if action_params:
-        control.throttle = float(action_params.get("throttle", 0.0))
-        control.steer = float(action_params.get("steer", 0.0))
-        control.brake = float(action_params.get("brake", 0.0))
-        control.reverse = bool(action_params.get("reverse", False))
-        action_name = action_params.get("name", f"Action_{action_index}")
+    Args:
+        action_index: The discrete action index selected by the agent
+        allow_reverse: Whether reverse actions are allowed
+        allow_steering: Whether steering actions are allowed
         
-        # Log if an intended reverse action was remapped
-        if not allow_reverse and config.DISCRETE_ACTION_MAP.get(action_index, {}).get("reverse") == True and action_index != 5:
-             # This case should ideally not happen if no_reverse_action_map correctly remaps all reverse actions
-             logger.debug(f"Action {action_index} ({config.DISCRETE_ACTION_MAP.get(action_index, {}).get('name')}) was intended as reverse but remapped by no_reverse_action_map to: {action_name}")
-        elif not allow_reverse and action_index == 5 and current_map[5]["name"] != config.DISCRETE_ACTION_MAP[5]["name"]:
-             logger.debug(f"Action 5 (Reverse) remapped to '{action_name}' due to allow_reverse=False.")
-
+    Returns:
+        Tuple of (carla.VehicleControl, action_name, effective_action_index)
+    """
+    # Determine which action map to use
+    if not allow_steering:
+        # Use forward-only action map (no steering)
+        action_map = _get_no_steering_action_map()
+    elif not allow_reverse:
+        # Use no-reverse action map
+        action_map = config.DISCRETE_ACTION_MAP_NO_REVERSE
     else:
-        logger.warning(f"Unknown discrete action index: {action_index}. Applying default (Brake). Remapping to action 3.")
-        # Fallback to a defined safe action (e.g., Brake - action 3 from the standard map)
-        fallback_action_params = config.DISCRETE_ACTION_MAP.get(3, {"throttle": 0.0, "steer": 0.0, "brake": 1.0, "reverse": False, "name": "Brake (Fallback)"})
-        control.throttle = float(fallback_action_params.get("throttle", 0.0))
-        control.steer = float(fallback_action_params.get("steer", 0.0))
-        control.brake = float(fallback_action_params.get("brake", 0.0))
-        control.reverse = bool(fallback_action_params.get("reverse", False))
-        action_name = fallback_action_params.get("name")
-        action_to_use = 3 # The effective action index is now 3
+        # Use full action map
+        action_map = config.DISCRETE_ACTION_MAP
+    
+    # Get the action definition
+    if action_index in action_map:
+        action_def = action_map[action_index]
+        effective_action_index = action_index
+    else:
+        # Fallback to a safe action if index is out of bounds
+        action_def = action_map.get(0, {
+            "throttle": 0.0, "steer": 0.0, "brake": 1.0, "reverse": False, "name": "SafeBrake"
+        })
+        effective_action_index = 0
+    
+    # Create vehicle control
+    control = carla.VehicleControl()
+    control.throttle = float(action_def.get("throttle", 0.0))
+    control.steer = float(action_def.get("steer", 0.0))
+    control.brake = float(action_def.get("brake", 0.0))
+    control.reverse = bool(action_def.get("reverse", False))
+    
+    action_name = action_def.get("name", f"Action_{action_index}")
+    
+    return control, action_name, effective_action_index
+
+def _get_no_steering_action_map():
+    """
+    Get action map with steering disabled (forward-only driving).
+    
+    Returns:
+        Dictionary mapping action indices to control parameters
+    """
+    return {
+        0: {
+            "throttle": 0.6,
+            "steer": 0.0,
+            "brake": 0.0,
+            "reverse": False,
+            "name": "Forward-Medium"
+        },
+        1: {
+            "throttle": 0.3,
+            "steer": 0.0,
+            "brake": 0.0,
+            "reverse": False,
+            "name": "Forward-Slow"
+        },
+        2: {
+            "throttle": 0.8,
+            "steer": 0.0,
+            "brake": 0.0,
+            "reverse": False,
+            "name": "Forward-Fast"
+        },
+        3: {
+            "throttle": 0.0,
+            "steer": 0.0,
+            "brake": 1.0,
+            "reverse": False,
+            "name": "Brake"
+        },
+        4: {
+            "throttle": 0.2,
+            "steer": 0.0,
+            "brake": 0.0,
+            "reverse": False,
+            "name": "Coast"
+        },
+        5: {
+            "throttle": 0.0,
+            "steer": 0.0,
+            "brake": 0.5,
+            "reverse": False,
+            "name": "Brake-Light"
+        }
+    }
+
+def get_action_space_size(allow_reverse: bool = True, allow_steering: bool = True):
+    """
+    Get the size of the action space based on enabled capabilities.
+    
+    Args:
+        allow_reverse: Whether reverse actions are allowed
+        allow_steering: Whether steering actions are allowed
         
-    return control, action_name, action_to_use 
+    Returns:
+        Integer size of the action space
+    """
+    if not allow_steering:
+        return len(_get_no_steering_action_map())
+    elif not allow_reverse:
+        return len(config.DISCRETE_ACTION_MAP_NO_REVERSE)
+    else:
+        return len(config.DISCRETE_ACTION_MAP) 

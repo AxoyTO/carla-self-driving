@@ -4,6 +4,8 @@ from collections import deque
 import os
 import logging
 from typing import Tuple
+import time
+from datetime import datetime
 
 # Assuming your project structure allows these imports from src/
 # If run with `python -m src.main`, then these should work.
@@ -52,6 +54,24 @@ class DQNTrainer:
         self.start_episode = 1
         self.best_eval_score = -float('inf')
         self.last_eval_score = -float('inf')
+        
+        # Create training run reports directory
+        self.training_start_time = datetime.now()
+        self.run_id = f"training_run_{self.training_start_time.strftime('%Y%m%d_%H%M%S')}"
+        self.reports_dir = os.path.join("reports", "training_runs", self.run_id)
+        os.makedirs(self.reports_dir, exist_ok=True)
+        os.makedirs("reports/best_model_reports", exist_ok=True)
+        
+        # Log training run info
+        run_info_path = os.path.join(self.reports_dir, "training_info.txt")
+        with open(run_info_path, "w") as f:
+            f.write(f"Training Run: {self.run_id}\n")
+            f.write(f"Started: {self.training_start_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Total Episodes: {self.num_episodes}\n")
+            f.write(f"Model Save Dir: {self.model_base_save_dir}\n")
+            f.write("="*50 + "\n\n")
+        
+        logger.info(f"Training reports will be saved to: {self.reports_dir}")
         
         if args.load_model_from:
             # Try to load best_eval_score from the *parent* of the loaded model dir if it's a 'best_model' dir,
@@ -173,31 +193,149 @@ class DQNTrainer:
 
     def _handle_evaluation_and_saving(self, i_episode: int):
         """Handles model evaluation and saving checkpoints or best models."""
-        # Evaluation
-        if i_episode % self.eval_interval == 0:
-            logger.info(f"--- Starting Evaluation after Training Episode {i_episode} ---")
-            eval_avg_score, eval_goal_rate = self.evaluate_agent()
-            self.last_eval_score = eval_avg_score
+        # Check if curriculum phase evaluation should be triggered
+        should_eval_phase = (hasattr(self.env, 'curriculum_manager') and 
+                            self.env.curriculum_manager and 
+                            self.env.curriculum_manager.should_evaluate_phase())
+        
+        # Regular evaluation interval or phase evaluation
+        should_eval_regular = i_episode % self.eval_interval == 0
+        
+        if should_eval_regular or should_eval_phase:
+            if should_eval_phase:
+                logger.info(f"--- Starting Automatic Phase Evaluation after Episode {i_episode} ---")
+                # Use more episodes for phase evaluation
+                eval_episodes = self.env.curriculum_manager.evaluation_episodes
+                eval_type = "phase"
+            else:
+                logger.info(f"--- Starting Regular Evaluation after Episode {i_episode} ---")
+                eval_episodes = self.num_eval_episodes
+                eval_type = "regular"
             
-            logger.info(f"Evaluation Avg Score: {eval_avg_score:.2f}, Goal Rate: {eval_goal_rate*100:.1f}%")
-            self.tb_logger.log_scalar("evaluation/avg_score", eval_avg_score, i_episode)
-            self.tb_logger.log_scalar("evaluation/goal_reached_rate", eval_goal_rate, i_episode)
-
-            if eval_avg_score > self.best_eval_score:
-                logger.info(f"New best: {eval_avg_score:.2f} (prev: {self.best_eval_score:.2f}). Saving to {self.current_best_model_dir}")
-                self.best_eval_score = eval_avg_score
-                os.makedirs(self.current_best_model_dir, exist_ok=True)
-                self.agent.save(self.current_best_model_dir, model_name="best_dqn_agent")
+            # Temporarily override num_eval_episodes for this evaluation
+            original_eval_episodes = self.num_eval_episodes
+            self.num_eval_episodes = eval_episodes
+            
+            try:
+                avg_score, goal_rate = self.evaluate_agent()
+                self.last_eval_score = avg_score
                 
-                # Save the best score to a file directly in the model_base_save_dir
-                with open(os.path.join(self.model_base_save_dir, "best_score.txt"), "w") as f:
-                    f.write(str(self.best_eval_score))
-                # Also save it inside the best_model directory for redundancy/clarity
-                with open(os.path.join(self.current_best_model_dir, "best_score.txt"), "w") as f:
-                    f.write(str(self.best_eval_score))
+                # Get comprehensive metrics from the last evaluation
+                performance_metrics = {}
+                if hasattr(self, '_last_performance_report') and self._last_performance_report:
+                    report = self._last_performance_report
+                    performance_metrics = {
+                        'goal_completion_rate': report.get('goal_success_rate', 0.0) / 100.0,
+                        'collision_free_rate': report.get('collision_free_rate', 0.0) / 100.0,
+                        'sidewalk_free_rate': report.get('sidewalk_free_rate', 0.0) / 100.0,
+                        'violations_per_episode': report.get('violations_per_episode', 0.0),
+                        'driving_score': report.get('overall_driving_score', 0.0)
+                    }
+                
+                # Save detailed evaluation report to file
+                if hasattr(self, '_last_performance_report') and self._last_performance_report:
+                    self._save_evaluation_report(i_episode, eval_type, self._last_performance_report)
+                
+                # Minimal console output
+                report = self._last_performance_report if hasattr(self, '_last_performance_report') else {}
+                driving_score = report.get('overall_driving_score', 0.0)
+                grade = report.get('performance_grade', 'N/A')
+                goal_rate_pct = report.get('goal_success_rate', 0.0)
+                collision_free_pct = report.get('collision_free_rate', 0.0)
+                rule_compliance_pct = report.get('rule_compliance_rate', 0.0)
+                
+                report_filename = f"episode_{i_episode:03d}_{eval_type}_evaluation.txt"
+                report_path = os.path.join(self.reports_dir, report_filename)
+                
+                logger.info(f"Episode {i_episode}: Evaluation completed - Driving Score: {driving_score:.1f}/100 ({grade})")
+                logger.info(f"  Goal Rate: {goal_rate_pct:.1f}% | Collision-Free: {collision_free_pct:.1f}% | Rule Compliance: {rule_compliance_pct:.1f}%")
+                logger.info(f"  Detailed report saved to: {report_path}")
+                
+                # Handle phase evaluation if needed
+                if should_eval_phase:
+                    phase_passed, evaluation_summary = self.env.curriculum_manager.evaluate_phase_completion(performance_metrics)
+                    should_repeat_phase = self.env.curriculum_manager.handle_phase_evaluation_result(phase_passed, evaluation_summary)
+                    
+                    # Save phase evaluation results to file
+                    phase_report_path = os.path.join(self.reports_dir, f"episode_{i_episode:03d}_phase_evaluation.txt")
+                    with open(phase_report_path, "w") as f:
+                        f.write(f"PHASE EVALUATION RESULTS - Episode {i_episode}\n")
+                        f.write("="*60 + "\n\n")
+                        f.write(evaluation_summary)
+                        f.write(f"\n\nResult: {'PASSED' if phase_passed else 'FAILED'}\n")
+                        f.write(f"Action: {'Advance to next phase' if not should_repeat_phase else 'Repeat current phase'}\n")
+                    
+                    if should_repeat_phase:
+                        logger.info("Phase evaluation: FAILED - Repeating phase")
+                    else:
+                        logger.info("Phase evaluation: PASSED - Advancing to next phase")
+                        self.env.curriculum_manager._advance_to_next_phase()
+                
+                # Regular evaluation logging and model saving
+                if should_eval_regular:
+                    # Log traditional metrics for backward compatibility
+                    self.tb_logger.log_scalar("evaluation/avg_score", avg_score, i_episode)
+                    self.tb_logger.log_scalar("evaluation/goal_reached_rate", goal_rate, i_episode)
+                    
+                    # Log comprehensive metrics if available (from the last evaluation)
+                    if hasattr(self, '_last_performance_report') and self._last_performance_report:
+                        report = self._last_performance_report
+                        
+                        # Overall Performance
+                        self.tb_logger.log_scalar("performance/overall_driving_score", report['overall_driving_score'], i_episode)
+                        self.tb_logger.log_scalar("performance/raw_avg_score", report['raw_avg_score'], i_episode)
+                        
+                        # Success Metrics
+                        self.tb_logger.log_scalar("success/goal_completion_rate", report['goal_success_rate'], i_episode)
+                        self.tb_logger.log_scalar("success/path_efficiency", report['avg_path_efficiency'], i_episode)
+                        self.tb_logger.log_scalar("success/avg_time_to_goal", report['avg_time_to_goal_seconds'], i_episode)
+                        
+                        # Safety Metrics
+                        self.tb_logger.log_scalar("safety/collision_free_rate", report['collision_free_rate'], i_episode)
+                        self.tb_logger.log_scalar("safety/sidewalk_free_rate", report['sidewalk_free_rate'], i_episode)
+                        self.tb_logger.log_scalar("safety/rule_compliance_rate", report['rule_compliance_rate'], i_episode)
+                        self.tb_logger.log_scalar("safety/violations_per_episode", report['violations_per_episode'], i_episode)
+                        
+                        # Driving Quality
+                        self.tb_logger.log_scalar("quality/avg_speed_kmh", report['avg_speed_kmh'], i_episode)
+                        self.tb_logger.log_scalar("quality/max_speed_kmh", report['max_speed_achieved_kmh'], i_episode)
+                        self.tb_logger.log_scalar("quality/smoothness_score", report['avg_smoothness_score'], i_episode)
+                        
+                        # Log termination breakdown as individual metrics
+                        for reason, count in report['termination_breakdown'].items():
+                            percentage = (count / report['num_episodes']) * 100
+                            self.tb_logger.log_scalar(f"termination/{reason}_percentage", percentage, i_episode)
+
+                    if avg_score > self.best_eval_score:
+                        logger.info(f"New best score: {avg_score:.2f} (previous: {self.best_eval_score:.2f})")
+                        self.best_eval_score = avg_score
+                        os.makedirs(self.current_best_model_dir, exist_ok=True)
+                        self.agent.save(self.current_best_model_dir, model_name="best_dqn_agent")
+                        
+                        # Save the best score to a file directly in the model_base_save_dir
+                        with open(os.path.join(self.model_base_save_dir, "best_score.txt"), "w") as f:
+                            f.write(str(self.best_eval_score))
+                        # Also save it inside the best_model directory for redundancy/clarity
+                        with open(os.path.join(self.current_best_model_dir, "best_score.txt"), "w") as f:
+                            f.write(str(self.best_eval_score))
+                            
+                        # Save comprehensive metrics for the best model
+                        if hasattr(self, '_last_performance_report') and self._last_performance_report:
+                            best_model_report_path = os.path.join("reports/best_model_reports", f"best_score_{driving_score:.1f}_episode_{i_episode:03d}.txt")
+                            with open(best_model_report_path, "w") as f:
+                                self._write_comprehensive_report(f, self._last_performance_report, f"BEST MODEL PERFORMANCE REPORT (Episode {i_episode})")
+                            
+                            # Also save in the model directory for backward compatibility
+                            with open(os.path.join(self.current_best_model_dir, "performance_report.txt"), "w") as f:
+                                self._write_comprehensive_report(f, self._last_performance_report, f"BEST MODEL PERFORMANCE REPORT (Episode {i_episode})")
+                
+            finally:
+                # Restore original num_eval_episodes
+                self.num_eval_episodes = original_eval_episodes
+                
             logger.info(f"--- Finished Evaluation ---")
 
-        # Periodic Checkpoint Saving
+        # Periodic Checkpoint Saving (only on regular intervals, not phase evaluations)
         if i_episode % self.save_interval == 0:
             # Checkpoints are saved directly under model_base_save_dir now
             checkpoint_dir = os.path.join(self.model_base_save_dir, f"episode_{i_episode}")
@@ -206,11 +344,79 @@ class DQNTrainer:
             
             with open(os.path.join(checkpoint_dir, "score.txt"), "w") as f:
                 f.write(str(self.last_eval_score))
-                f.write(f"\nEval Goal Rate: {eval_goal_rate*100:.1f}%")
+                if 'goal_rate' in locals():
+                    f.write(f"\nEval Goal Rate: {goal_rate*100:.1f}%")
                 
-            logger.info(f"Saved checkpoint at ep {i_episode} to {checkpoint_dir} with score: {self.last_eval_score:.2f}")
+            logger.info(f"Saved checkpoint at episode {i_episode} with score: {self.last_eval_score:.2f}")
 
-    def _run_evaluation_episode(self, episode_num: int) -> Tuple[float, int, str]:
+    def _save_evaluation_report(self, episode: int, eval_type: str, report: dict):
+        """Save detailed evaluation report to file."""
+        report_filename = f"episode_{episode:03d}_{eval_type}_evaluation.txt"
+        report_path = os.path.join(self.reports_dir, report_filename)
+        
+        with open(report_path, "w") as f:
+            title = f"EVALUATION REPORT - Episode {episode} ({eval_type.upper()})"
+            self._write_comprehensive_report(f, report, title)
+
+    def _write_comprehensive_report(self, file_obj, report: dict, title: str):
+        """Write comprehensive evaluation report to file object."""
+        file_obj.write(title + "\n")
+        file_obj.write("="*len(title) + "\n")
+        file_obj.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        
+        # Overall Performance
+        file_obj.write("OVERALL PERFORMANCE:\n")
+        file_obj.write(f"   Driving Score: {report['overall_driving_score']:.1f}/100\n")
+        file_obj.write(f"   Performance Grade: {report['performance_grade']}\n")
+        file_obj.write(f"   Raw Reward Score: {report['raw_avg_score']:.2f}\n\n")
+        
+        # Success Metrics
+        file_obj.write("SUCCESS METRICS:\n")
+        file_obj.write(f"   Goal Completion Rate: {report['goal_success_rate']:.1f}%\n")
+        file_obj.write(f"   Average Time to Goal: {report['avg_time_to_goal_seconds']:.1f} seconds\n")
+        file_obj.write(f"   Path Efficiency: {report['avg_path_efficiency']:.2f}x optimal\n\n")
+        
+        # Safety Metrics
+        file_obj.write("SAFETY METRICS:\n")
+        file_obj.write(f"   Collision-Free Rate: {report['collision_free_rate']:.1f}%\n")
+        file_obj.write(f"   Sidewalk-Free Rate: {report['sidewalk_free_rate']:.1f}%\n")
+        file_obj.write(f"   Rule Compliance Rate: {report['rule_compliance_rate']:.1f}%\n")
+        file_obj.write(f"   Total Violations: {report['total_rule_violations']} ({report['violations_per_episode']:.1f} per episode)\n\n")
+        
+        # Driving Quality
+        file_obj.write("DRIVING QUALITY:\n")
+        file_obj.write(f"   Average Speed: {report['avg_speed_kmh']:.1f} km/h\n")
+        file_obj.write(f"   Max Speed Achieved: {report['max_speed_achieved_kmh']:.1f} km/h\n")
+        file_obj.write(f"   Smoothness Score: {report['avg_smoothness_score']:.1f}/100\n\n")
+        
+        # Failure Analysis
+        file_obj.write("FAILURE ANALYSIS:\n")
+        for reason, count in report['termination_breakdown'].items():
+            percentage = (count / report['num_episodes']) * 100
+            file_obj.write(f"   {reason}: {count} episodes ({percentage:.1f}%)\n")
+        file_obj.write("\n")
+        
+        # Performance Interpretation
+        file_obj.write("INTERPRETATION:\n")
+        if report['overall_driving_score'] >= 85:
+            file_obj.write("   EXCELLENT! This model is ready for advanced scenarios.\n")
+        elif report['overall_driving_score'] >= 70:
+            file_obj.write("   GOOD performance. Minor improvements needed.\n")
+        elif report['overall_driving_score'] >= 55:
+            file_obj.write("   FAIR performance. Significant training still required.\n")
+        else:
+            file_obj.write("   POOR performance. Major improvements needed.\n")
+        file_obj.write("\n")
+        
+        # Detailed Episode Breakdown
+        file_obj.write("DETAILED METRICS:\n")
+        file_obj.write(f"   Episodes Evaluated: {report['num_episodes']}\n")
+        file_obj.write(f"   Total Collisions: {report['total_collisions']}\n")
+        file_obj.write(f"   Total Sidewalk Violations: {report['total_sidewalk_violations']}\n")
+        file_obj.write(f"   Total Rule Violations: {report['total_rule_violations']}\n")
+        file_obj.write("="*60 + "\n")
+
+    def _run_evaluation_episode(self, episode_num: int) -> Tuple[float, int, str, dict]:
         """Runs a single evaluation episode.
         
         Args:
@@ -221,10 +427,42 @@ class DQNTrainer:
             - episode_score: Total score for the episode
             - steps_taken: Number of steps taken
             - termination_reason: Why the episode ended
+            - detailed_metrics: Dictionary with detailed performance metrics
         """
         state, _ = self.env.reset()
         episode_score = 0
         max_eval_steps = getattr(self.env, 'spec', {}).get('max_episode_steps', 1000) if hasattr(self.env, 'spec') else 1000
+        
+        # Track detailed metrics for this episode
+        detailed_metrics = {
+            'goal_reached': False,
+            'collision_occurred': False,
+            'sidewalk_violations': 0,
+            'traffic_light_violations': 0,
+            'time_to_goal_seconds': 0.0,
+            'distance_traveled': 0.0,
+            'initial_distance_to_goal': 0.0,
+            'final_distance_to_goal': 0.0,
+            'avg_speed_kmh': 0.0,
+            'max_speed_kmh': 0.0,
+            'smooth_driving_score': 0.0,
+            'lane_keeping_score': 0.0,
+            'path_efficiency': 0.0,
+            'rule_violations': 0,
+            'steps_taken': 0
+        }
+        
+        # Track data for smooth driving calculation
+        previous_location = None
+        previous_steer = 0.0
+        speed_history = []
+        steer_changes = []
+        
+        # Get initial distance to goal
+        if hasattr(self.env, 'dist_to_goal_debug'):
+            detailed_metrics['initial_distance_to_goal'] = self.env.dist_to_goal_debug
+        
+        episode_start_time = time.time()
         
         for eval_step in range(max_eval_steps):
             action = self.agent.select_action(state, self.epsilon_eval)
@@ -233,16 +471,89 @@ class DQNTrainer:
             state = next_state
             episode_score += reward
             
+            # Collect detailed metrics during the episode
+            if hasattr(self.env, 'vehicle_manager') and self.env.vehicle_manager.get_vehicle():
+                vehicle = self.env.vehicle_manager.get_vehicle()
+                current_location = vehicle.get_location()
+                current_speed_kmh = self.env.forward_speed_debug * 3.6
+                
+                # Track speed
+                speed_history.append(current_speed_kmh)
+                detailed_metrics['max_speed_kmh'] = max(detailed_metrics['max_speed_kmh'], current_speed_kmh)
+                
+                # Track distance traveled
+                if previous_location:
+                    distance_step = current_location.distance(previous_location)
+                    detailed_metrics['distance_traveled'] += distance_step
+                previous_location = current_location
+                
+                # Track steering smoothness
+                current_steer = vehicle.get_control().steer
+                if eval_step > 0:
+                    steer_change = abs(current_steer - previous_steer)
+                    steer_changes.append(steer_change)
+                previous_steer = current_steer
+            
+            # Track violations
+            if hasattr(self.env, 'collision_flag_debug') and self.env.collision_flag_debug:
+                detailed_metrics['collision_occurred'] = True
+                detailed_metrics['rule_violations'] += 1
+                
+            if hasattr(self.env, 'on_sidewalk_debug_flag') and self.env.on_sidewalk_debug_flag:
+                detailed_metrics['sidewalk_violations'] += 1
+                detailed_metrics['rule_violations'] += 1
+            
             if done:
                 termination_reason = info.get("termination_reason", "unknown")
-                logger.info(f"  Eval Episode {episode_num}/{self.num_eval_episodes} "
+                detailed_metrics['time_to_goal_seconds'] = time.time() - episode_start_time
+                detailed_metrics['steps_taken'] = eval_step + 1
+                
+                # Final distance to goal
+                if hasattr(self.env, 'dist_to_goal_debug'):
+                    detailed_metrics['final_distance_to_goal'] = self.env.dist_to_goal_debug
+                
+                # Calculate derived metrics
+                if len(speed_history) > 0:
+                    detailed_metrics['avg_speed_kmh'] = sum(speed_history) / len(speed_history)
+                
+                # Goal reached check
+                if termination_reason in ["goal_reached", "goal_reached_and_stopped"]:
+                    detailed_metrics['goal_reached'] = True
+                
+                # Path efficiency (lower is better - 1.0 is perfect)
+                if detailed_metrics['initial_distance_to_goal'] > 0:
+                    detailed_metrics['path_efficiency'] = detailed_metrics['distance_traveled'] / detailed_metrics['initial_distance_to_goal']
+                
+                # Smooth driving score (0-100, higher is better)
+                if len(steer_changes) > 0:
+                    avg_steer_change = sum(steer_changes) / len(steer_changes)
+                    detailed_metrics['smooth_driving_score'] = max(0, 100 - (avg_steer_change * 1000))
+                else:
+                    detailed_metrics['smooth_driving_score'] = 100
+                
+                logger.debug(f"  Eval Episode {episode_num}/{self.num_eval_episodes} "
                           f"Score: {episode_score:.2f}, "
                           f"Steps: {eval_step + 1}, "
+                          f"Goal: {'✓' if detailed_metrics['goal_reached'] else '✗'}, "
+                          f"Collisions: {1 if detailed_metrics['collision_occurred'] else 0}, "
+                          f"Sidewalk: {detailed_metrics['sidewalk_violations']}, "
+                          f"Speed: {detailed_metrics['avg_speed_kmh']:.1f}km/h, "
                           f"Termination: {termination_reason}")
-                return episode_score, eval_step + 1, termination_reason
+                return episode_score, eval_step + 1, termination_reason, detailed_metrics
                 
         # If we get here, we hit max steps
-        return episode_score, max_eval_steps, "max_steps_reached"
+        detailed_metrics['time_to_goal_seconds'] = time.time() - episode_start_time
+        detailed_metrics['steps_taken'] = max_eval_steps
+        
+        if len(speed_history) > 0:
+            detailed_metrics['avg_speed_kmh'] = sum(speed_history) / len(speed_history)
+        if detailed_metrics['initial_distance_to_goal'] > 0:
+            detailed_metrics['path_efficiency'] = detailed_metrics['distance_traveled'] / detailed_metrics['initial_distance_to_goal']
+        if len(steer_changes) > 0:
+            avg_steer_change = sum(steer_changes) / len(steer_changes)
+            detailed_metrics['smooth_driving_score'] = max(0, 100 - (avg_steer_change * 1000))
+            
+        return episode_score, max_eval_steps, "max_steps_reached", detailed_metrics
 
     def _log_evaluation_summary(self, total_score: float, goals_reached: int, 
                               termination_reasons: dict, num_episodes: int):
@@ -278,28 +589,40 @@ class DQNTrainer:
         goals_reached = 0
         termination_reasons = {}
         
+        # Collect detailed metrics across all episodes
+        all_detailed_metrics = []
+        
         # Store original pygame state and disable during evaluation
         original_pygame_state = self.env.enable_pygame_display
         self.env.enable_pygame_display = False
 
         try:
             for i in range(self.num_eval_episodes):
-                episode_score, steps_taken, termination_reason = self._run_evaluation_episode(i + 1)
+                episode_score, steps_taken, termination_reason, detailed_metrics = self._run_evaluation_episode(i + 1)
                 
                 # Update statistics
                 total_score += episode_score
                 termination_reasons[termination_reason] = termination_reasons.get(termination_reason, 0) + 1
+                all_detailed_metrics.append(detailed_metrics)
                 
                 if termination_reason in ["goal_reached", "goal_reached_and_stopped"]:
                     goals_reached += 1
             
-            # Log summary of all episodes
-            self._log_evaluation_summary(total_score, goals_reached, 
-                                       termination_reasons, self.num_eval_episodes)
+            # Calculate comprehensive performance metrics
+            performance_report = self._calculate_performance_metrics(all_detailed_metrics, total_score, goals_reached, termination_reasons)
             
-            # Calculate final metrics
+            # Store for TensorBoard logging and model saving
+            self._last_performance_report = performance_report
+            
+            # Log traditional metrics for compatibility
             avg_score = total_score / self.num_eval_episodes if self.num_eval_episodes > 0 else 0
             goal_reached_rate = goals_reached / self.num_eval_episodes if self.num_eval_episodes > 0 else 0
+            
+            # Brief console summary (detailed report will be saved to file)
+            logger.info(f"Evaluation complete: {self.num_eval_episodes} episodes")
+            logger.info(f"  Average Score: {avg_score:.2f}")
+            logger.info(f"  Goal Reached Rate: {goal_reached_rate*100:.1f}%")
+            logger.info(f"  Overall Driving Score: {performance_report['overall_driving_score']:.1f}/100")
             
             return avg_score, goal_reached_rate
             
@@ -308,6 +631,116 @@ class DQNTrainer:
             return 0.0, 0.0
         finally:
             self.env.enable_pygame_display = original_pygame_state  # Restore pygame state
+
+    def _calculate_performance_metrics(self, all_metrics, total_score, goals_reached, termination_reasons):
+        """Calculate comprehensive performance metrics from detailed episode data."""
+        num_episodes = len(all_metrics)
+        
+        if num_episodes == 0:
+            return {}
+            
+        # Success Metrics
+        goal_success_rate = (goals_reached / num_episodes) * 100
+        collision_free_rate = (sum(1 for m in all_metrics if not m['collision_occurred']) / num_episodes) * 100
+        sidewalk_free_rate = (sum(1 for m in all_metrics if m['sidewalk_violations'] == 0) / num_episodes) * 100
+        rule_compliance_rate = (sum(1 for m in all_metrics if m['rule_violations'] == 0) / num_episodes) * 100
+        
+        # Efficiency Metrics
+        successful_episodes = [m for m in all_metrics if m['goal_reached']]
+        if successful_episodes:
+            avg_time_to_goal = sum(m['time_to_goal_seconds'] for m in successful_episodes) / len(successful_episodes)
+            avg_path_efficiency = sum(m['path_efficiency'] for m in successful_episodes) / len(successful_episodes)
+        else:
+            avg_time_to_goal = 0.0
+            avg_path_efficiency = 0.0
+            
+        # Speed and Driving Quality
+        all_speeds = [m['avg_speed_kmh'] for m in all_metrics if m['avg_speed_kmh'] > 0]
+        avg_speed = sum(all_speeds) / len(all_speeds) if all_speeds else 0.0
+        max_speed_achieved = max((m['max_speed_kmh'] for m in all_metrics), default=0.0)
+        
+        # Smooth driving
+        all_smoothness = [m['smooth_driving_score'] for m in all_metrics]
+        avg_smoothness = sum(all_smoothness) / len(all_smoothness) if all_smoothness else 0.0
+        
+        # Safety Metrics
+        total_collisions = sum(1 for m in all_metrics if m['collision_occurred'])
+        total_sidewalk_violations = sum(m['sidewalk_violations'] for m in all_metrics)
+        total_rule_violations = sum(m['rule_violations'] for m in all_metrics)
+        
+        # Calculate overall driving score (0-100)
+        driving_score = self._calculate_overall_driving_score(
+            goal_success_rate, collision_free_rate, sidewalk_free_rate, 
+            rule_compliance_rate, avg_smoothness, avg_path_efficiency
+        )
+        
+        return {
+            'num_episodes': num_episodes,
+            'raw_avg_score': total_score / num_episodes,
+            
+            # Success Metrics (%)
+            'goal_success_rate': goal_success_rate,
+            'collision_free_rate': collision_free_rate,
+            'sidewalk_free_rate': sidewalk_free_rate,
+            'rule_compliance_rate': rule_compliance_rate,
+            
+            # Efficiency Metrics
+            'avg_time_to_goal_seconds': avg_time_to_goal,
+            'avg_path_efficiency': avg_path_efficiency,
+            
+            # Speed and Quality Metrics
+            'avg_speed_kmh': avg_speed,
+            'max_speed_achieved_kmh': max_speed_achieved,
+            'avg_smoothness_score': avg_smoothness,
+            
+            # Safety Metrics
+            'total_collisions': total_collisions,
+            'total_sidewalk_violations': total_sidewalk_violations,
+            'total_rule_violations': total_rule_violations,
+            'violations_per_episode': total_rule_violations / num_episodes,
+            
+            # Overall Assessment
+            'overall_driving_score': driving_score,
+            'termination_breakdown': termination_reasons,
+            
+            # Performance Grade
+            'performance_grade': self._get_performance_grade(driving_score)
+        }
+
+    def _calculate_overall_driving_score(self, goal_rate, collision_free_rate, sidewalk_free_rate, rule_compliance_rate, smoothness, path_efficiency):
+        """Calculate a single 0-100 driving score based on multiple factors."""
+        # Weight different aspects of driving performance
+        weights = {
+            'success': 0.30,      # Goal completion is important
+            'safety': 0.40,       # Safety is most important
+            'compliance': 0.15,   # Rule compliance
+            'efficiency': 0.10,   # Path efficiency
+            'smoothness': 0.05    # Driving smoothness
+        }
+        
+        # Safety score (average of collision-free and sidewalk-free rates)
+        safety_score = (collision_free_rate + sidewalk_free_rate) / 2
+        
+        # Efficiency score (inverse of path efficiency - lower is better)
+        efficiency_score = max(0, 100 - ((path_efficiency - 1.0) * 50)) if path_efficiency > 0 else 0
+        
+        overall_score = (
+            weights['success'] * goal_rate +
+            weights['safety'] * safety_score +
+            weights['compliance'] * rule_compliance_rate +
+            weights['efficiency'] * efficiency_score +
+            weights['smoothness'] * smoothness
+        )
+        
+        return min(100, max(0, overall_score))
+
+    def _get_performance_grade(self, score):
+        """Convert numerical score to letter grade."""
+        if score >= 90: return "A (Excellent)"
+        elif score >= 80: return "B (Good)"
+        elif score >= 70: return "C (Fair)"
+        elif score >= 60: return "D (Poor)"
+        else: return "F (Failing)"
 
     def _update_epsilon(self, current_epsilon: float) -> float:
         """Updates epsilon for the next episode using decay.

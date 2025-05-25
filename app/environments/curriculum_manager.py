@@ -31,6 +31,12 @@ class CurriculumManager:
         self.episode_in_current_phase: int = 0
         self.total_episodes_tracked: int = 0 # Total episodes run through this manager instance
 
+        # Phase repetition tracking
+        self.phase_repeat_count: int = 0  # How many times current phase has been repeated
+        self.max_phase_repeats: int = config.CURRICULUM_MAX_PHASE_REPEATS
+        self.evaluation_enabled: bool = config.CURRICULUM_EVALUATION_ENABLED
+        self.evaluation_episodes: int = config.CURRICULUM_EVALUATION_EPISODES
+        
         # Timing for phases
         self.phase_start_time: Optional[datetime] = None
         self.total_phase_time_spent: timedelta = timedelta(0)
@@ -44,6 +50,125 @@ class CurriculumManager:
         if not self.phases:
             self.logger.error("CurriculumManager initialized with no phases! This should not happen.")
             self.phases = [{ "name": "FallbackPhase", "episodes": 1, "spawn_config": "random"}] # Minimal fallback
+
+    def should_evaluate_phase(self) -> bool:
+        """
+        Determine if we should run phase evaluation.
+        
+        Returns:
+            True if evaluation should be triggered
+        """
+        if not self.evaluation_enabled:
+            return False
+            
+        current_phase_cfg = self.get_current_phase_config()
+        if not current_phase_cfg:
+            return False
+            
+        # Check if we've completed the phase episodes
+        return self.episode_in_current_phase > current_phase_cfg["episodes"]
+
+    def evaluate_phase_completion(self, performance_metrics: Dict[str, float]) -> Tuple[bool, str]:
+        """
+        Evaluate if the current phase has been completed successfully based on performance metrics.
+        
+        Args:
+            performance_metrics: Dictionary containing performance metrics from evaluation
+            
+        Returns:
+            Tuple of (phase_passed, evaluation_summary)
+        """
+        current_phase_cfg = self.get_current_phase_config()
+        if not current_phase_cfg:
+            return False, "No current phase config available"
+            
+        # Get phase-specific criteria or use defaults
+        phase_criteria = current_phase_cfg.get("evaluation_criteria", {})
+        default_criteria = config.CURRICULUM_COMPLETION_CRITERIA
+        
+        # Combine default and phase-specific criteria
+        criteria = {**default_criteria, **phase_criteria}
+        
+        failed_criteria = []
+        passed_criteria = []
+        
+        # Check each criterion
+        for criterion, threshold in criteria.items():
+            metric_value = performance_metrics.get(criterion.replace("min_", "").replace("max_", ""), 0.0)
+            
+            if criterion.startswith("min_"):
+                if metric_value >= threshold:
+                    passed_criteria.append(f"{criterion}: {metric_value:.3f} >= {threshold}")
+                else:
+                    failed_criteria.append(f"{criterion}: {metric_value:.3f} < {threshold}")
+            elif criterion.startswith("max_"):
+                if metric_value <= threshold:
+                    passed_criteria.append(f"{criterion}: {metric_value:.3f} <= {threshold}")
+                else:
+                    failed_criteria.append(f"{criterion}: {metric_value:.3f} > {threshold}")
+        
+        phase_passed = len(failed_criteria) == 0
+        
+        # Create evaluation summary
+        summary_lines = [
+            f"Phase Evaluation: {'PASSED' if phase_passed else 'FAILED'}",
+            f"Criteria passed: {len(passed_criteria)}/{len(criteria)}",
+        ]
+        
+        if failed_criteria:
+            summary_lines.append("Failed criteria:")
+            for failure in failed_criteria:
+                summary_lines.append(f"  - {failure}")
+                
+        if passed_criteria:
+            summary_lines.append("Passed criteria:")
+            for success in passed_criteria:
+                summary_lines.append(f"  - {success}")
+        
+        evaluation_summary = "\n".join(summary_lines)
+        
+        return phase_passed, evaluation_summary
+
+    def handle_phase_evaluation_result(self, phase_passed: bool, evaluation_summary: str) -> bool:
+        """
+        Handle the result of phase evaluation and determine if phase should be repeated.
+        
+        Args:
+            phase_passed: Whether the phase evaluation passed
+            evaluation_summary: Summary of the evaluation results
+            
+        Returns:
+            True if phase should be repeated, False if should advance to next phase
+        """
+        current_phase_cfg = self.get_current_phase_config()
+        if not current_phase_cfg:
+            return False
+            
+        phase_name = current_phase_cfg.get("name", "Unknown")
+        
+        if phase_passed:
+            self.logger.info(f"Phase '{phase_name}' completed successfully!")
+            self.logger.info(evaluation_summary)
+            self.phase_repeat_count = 0  # Reset repeat count for next phase
+            return False  # Advance to next phase
+        else:
+            if self.phase_repeat_count < self.max_phase_repeats:
+                self.phase_repeat_count += 1
+                self.logger.warning(f"Phase '{phase_name}' failed evaluation (attempt {self.phase_repeat_count}/{self.max_phase_repeats})")
+                self.logger.warning(evaluation_summary)
+                self.logger.info(f"Repeating phase '{phase_name}' (attempt {self.phase_repeat_count + 1})")
+                
+                # Reset episode counter for phase repetition
+                self.episode_in_current_phase = 0
+                self.phase_start_time = datetime.now()  # Reset phase start time
+                
+                return True  # Repeat the phase
+            else:
+                self.logger.error(f"Phase '{phase_name}' failed evaluation after {self.max_phase_repeats} attempts")
+                self.logger.error(evaluation_summary)
+                self.logger.info(f"Advancing to next phase despite failures (max repeats reached)")
+                self.phase_repeat_count = 0  # Reset for next phase
+                return False  # Advance despite failure
 
     def advance_phase(self):
         """Checks if the current phase is completed and advances to the next if so.
@@ -59,23 +184,43 @@ class CurriculumManager:
 
         if self.episode_in_current_phase == 1: # First episode of any phase (initial or new)
             self.phase_start_time = datetime.now()
-            self.logger.info(f"Starting/Continuing Curriculum Phase: '{current_phase_cfg['name']}' (Ep {self.episode_in_current_phase}/{current_phase_cfg['episodes']})")
+            phase_name = current_phase_cfg['name']
+            if self.phase_repeat_count > 0:
+                self.logger.info(f"Starting Phase '{phase_name}' (Repeat {self.phase_repeat_count}/{self.max_phase_repeats}) - Episode {self.episode_in_current_phase}/{current_phase_cfg['episodes']}")
+            else:
+                self.logger.info(f"Starting Phase '{phase_name}' - Episode {self.episode_in_current_phase}/{current_phase_cfg['episodes']}")
 
+        # Check if phase episodes are completed (but evaluation might still be pending)
         if self.episode_in_current_phase > current_phase_cfg["episodes"]:
+            # Phase episodes completed - evaluation will be handled externally by trainer
             if self.phase_start_time:
                 phase_duration = datetime.now() - self.phase_start_time
                 self.total_phase_time_spent += phase_duration
-                self.logger.info(f"Curriculum Phase '{current_phase_cfg['name']}' completed in {phase_duration.total_seconds():.2f}s ({self.episode_in_current_phase -1} episodes).")
-            
-            if self.current_phase_idx < len(self.phases) - 1:
-                self.current_phase_idx += 1
-                self.episode_in_current_phase = 1 # Reset for new phase
-                new_phase_cfg = self.get_current_phase_config()
-                self.phase_start_time = datetime.now() # Reset start time for the new phase
-                self.logger.info(f"Advanced to Curriculum Phase: '{new_phase_cfg['name']}' (Ep {self.episode_in_current_phase}/{new_phase_cfg['episodes']})")
-            elif self.episode_in_current_phase == current_phase_cfg["episodes"] + 1: # Log once after last phase completion
+                phase_name = current_phase_cfg['name']
+                actual_episodes = self.episode_in_current_phase - 1  # Don't count the current episode
+                
+                if self.evaluation_enabled:
+                    self.logger.info(f"Phase '{phase_name}' episodes completed ({actual_episodes} episodes) in {phase_duration.total_seconds():.2f}s. Awaiting evaluation...")
+                else:
+                    self.logger.info(f"Phase '{phase_name}' completed ({actual_episodes} episodes) in {phase_duration.total_seconds():.2f}s. Advancing to next phase...")
+                    self._advance_to_next_phase()
+
+    def _advance_to_next_phase(self):
+        """Internal method to advance to the next phase."""
+        current_phase_cfg = self.get_current_phase_config()
+        
+        if self.current_phase_idx < len(self.phases) - 1:
+            self.current_phase_idx += 1
+            self.episode_in_current_phase = 0  # Will be incremented to 1 on next advance_phase call
+            self.phase_repeat_count = 0  # Reset repeat count for new phase
+            new_phase_cfg = self.get_current_phase_config()
+            self.phase_start_time = None  # Will be set on next advance_phase call
+            self.logger.info(f"Advanced to Phase '{new_phase_cfg['name']}' (Phase {self.current_phase_idx + 1}/{len(self.phases)})")
+        else:
+            # Completed all phases
+            if self.episode_in_current_phase == current_phase_cfg["episodes"] + 1: # Log once after last phase completion
                 self.logger.info(f"Entire curriculum completed. Continuing with settings from last phase: '{current_phase_cfg['name']}'.")
-                # Keep current_phase_idx at max, episode_in_current_phase will continue to increment beyond episodes count
+            # Keep current_phase_idx at max, episode_in_current_phase will continue to increment beyond episodes count
 
     def get_current_phase_config(self) -> Optional[Dict[str, Any]]:
         if 0 <= self.current_phase_idx < len(self.phases):
