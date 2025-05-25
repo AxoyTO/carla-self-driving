@@ -497,6 +497,181 @@ python -c "import carla; print('CARLA OK')"
 ./scripts/carla_server_manager.sh status
 ```
 
+## Model Evaluation
+
+### Overview
+
+Instead of relying on cryptic reward scores (like 2031.73), this evaluation system provides **interpretable metrics** that actually matter for self-driving car performance. Think of it like getting an accuracy score for a classification model - but for autonomous driving.
+
+### Key Metrics Explained
+
+#### Overall Driving Score (0-100)
+A weighted combination of all performance aspects:
+- **90-100**: Excellent (A) - Ready for advanced scenarios
+- **80-89**: Good (B) - Minor improvements needed  
+- **70-79**: Fair (C) - Significant training required
+- **60-69**: Poor (D) - Major improvements needed
+- **0-59**: Failing (F) - Not suitable for deployment
+
+#### Success Metrics
+- **Goal Completion Rate**: % of episodes where car reaches destination
+- **Path Efficiency**: How direct the route was (1.0 = perfect, >2.0 = very inefficient)
+- **Average Time to Goal**: Speed of task completion
+
+#### Safety Metrics  
+- **Collision-Free Rate**: % of episodes without crashes
+- **Sidewalk-Free Rate**: % of episodes staying on roads
+- **Rule Compliance Rate**: % of episodes following all traffic rules
+- **Violations per Episode**: Average number of rule breaks per episode
+
+#### Driving Quality
+- **Average Speed**: How fast the car typically drives
+- **Smoothness Score**: How jerky vs smooth the steering is (0-100)
+- **Max Speed Achieved**: Highest speed reached
+
+### How to Use
+
+#### 1. During Training
+The comprehensive metrics are automatically logged during training every `eval_interval` episodes. You'll see a brief summary in the console, with detailed reports saved to the `reports/` directory:
+
+```
+Episode 100: Evaluation completed - Driving Score: 78.5/100 (C)
+  Goal Rate: 80.0% | Collision-Free: 90.0% | Rule Compliance: 80.0%
+  Detailed report saved to: reports/training_run_20231201_143052/episode_100_evaluation.txt
+```
+
+#### 2. Standalone Model Evaluation
+
+Test any trained model with the evaluation script:
+
+```bash
+# Basic evaluation
+python evaluate_model.py --model_path models/best_model --num_episodes 10
+
+# Quick evaluation without display
+python evaluate_model.py --model_path models/episode_500 --num_episodes 5 --no_display
+
+# Verbose evaluation with detailed logging
+python evaluate_model.py --model_path models/best_model --num_episodes 10 --verbose
+```
+
+#### 3. TensorBoard Monitoring
+
+View training progress in TensorBoard with organized metrics:
+
+```bash
+tensorboard --logdir logs/
+```
+
+Navigate to these sections:
+- **performance/**: Overall driving score, grades
+- **success/**: Goal completion, efficiency metrics  
+- **safety/**: Collision rates, violations
+- **quality/**: Speed, smoothness scores
+- **termination/**: Breakdown of episode endings
+
+#### 4. Reports Directory
+
+All detailed evaluation reports are saved to `reports/` with organized structure:
+
+```
+reports/
+├── training_run_20231201_143052/
+│   ├── episode_025_evaluation.txt
+│   ├── episode_050_evaluation.txt
+│   ├── episode_075_evaluation.txt
+│   └── phase_evaluation_results.txt
+├── standalone_evaluations/
+│   ├── best_model_evaluation_20231201_150234.txt
+│   └── episode_500_evaluation_20231201_151045.txt
+└── best_model_reports/
+    ├── best_score_78.5_episode_075.txt
+    └── performance_comparison.txt
+```
+
+### What Good Performance Looks Like
+
+#### Beginner Model (Score: 40-60)
+- Goal Completion: 20-40%
+- Collision-Free: 60-80%  
+- Many sidewalk violations
+- Poor path efficiency (>2.0x)
+
+#### Intermediate Model (Score: 65-80)
+- Goal Completion: 60-80%
+- Collision-Free: 85-95%
+- Occasional rule violations
+- Decent efficiency (1.2-1.8x)
+
+#### Advanced Model (Score: 85-95)
+- Goal Completion: 90%+
+- Collision-Free: 95%+
+- Rare violations
+- Good efficiency (<1.5x)
+- Smooth driving (80+ smoothness)
+
+### Interpreting Results
+
+#### High Raw Score, Low Driving Score?
+Your model might be gaming the reward system (e.g., getting distance rewards without actually driving well).
+
+#### Low Goal Completion but High Safety?
+Your model is overly cautious - needs more exploration or training.
+
+#### High Collisions?
+- Check proximity penalties in reward function
+- Increase safety-focused training
+- Review collision detection logic
+
+#### Poor Smoothness?
+- Add steering smoothness penalties
+- Adjust action space granularity
+- Train longer for control refinement
+
+### Performance Tracking
+
+#### Best Model Selection
+Models are automatically saved when they achieve:
+1. Highest raw reward score (traditional)
+2. Best overall driving score (new metric)
+
+A detailed performance report is saved with each best model in the `reports/best_model_reports/` directory.
+
+#### Progress Monitoring
+Track these trends over training episodes:
+- **Overall Driving Score**: Should increase steadily
+- **Goal Completion Rate**: Should reach 80%+ for good models
+- **Violations per Episode**: Should decrease toward 0
+- **Smoothness Score**: Should increase with longer training
+
+### Customization
+
+#### Adjusting Metric Weights
+Modify weights in `_calculate_overall_driving_score()`:
+```python
+weights = {
+    'success': 0.30,      # Goal completion importance
+    'safety': 0.40,       # Safety importance (most critical)
+    'compliance': 0.15,   # Rule following
+    'efficiency': 0.10,   # Path efficiency
+    'smoothness': 0.05    # Driving smoothness
+}
+```
+
+#### Adding Custom Metrics
+Extend `detailed_metrics` in `_run_evaluation_episode()` to track domain-specific performance indicators.
+
+### Benefits
+
+1. **Interpretable**: Know exactly how well your model drives
+2. **Comprehensive**: Covers all aspects of driving performance  
+3. **Comparable**: Standardized 0-100 scores like test grades
+4. **Actionable**: Clear guidance on what needs improvement
+5. **Professional**: Suitable for reports and presentations
+6. **Persistent**: Detailed reports saved for later analysis
+
+No more wondering what a score of 2031.73 means - now you know your model has a **Driving Score of 78.5/100 (Grade: C)** with specific areas for improvement saved in organized reports!
+
 ## Troubleshooting
 
 ### Local Development Issues
