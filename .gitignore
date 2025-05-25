@@ -186,8 +186,9 @@ src-alternative
 /src/logs/
 /setup/
 
-# Saved Models / Checkpoints
+# Saved Models / Checkpoints / Reports
 models/
+reports/
 
 # Sensor Data, Tensorboard Logs, etc.
 /data
