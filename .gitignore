@@ -68,6 +68,9 @@ instance/
 # Scrapy stuff:
 .scrapy
 
+# Cursor stuff:
+.cursorrules
+
 # Sphinx documentation
 docs/_build/
 
