@@ -1,0 +1,96 @@
+# Conservative Configuration
+# Maximum stability, minimal resource usage
+experiment_name: "conservative_dqn"
+description: "Conservative DQN configuration for maximum stability and minimal resource usage"
+tags: ["dqn", "conservative", "stable", "low-memory"]
+device: "auto"
+
+agent:
+  # Basic hyperparameters
+  learning_rate: 0.00005
+  gamma: 0.99
+  epsilon_start: 1.0
+  epsilon_end: 0.01
+  epsilon_decay: 0.999
+  
+  # Training parameters (reduced for stability)
+  batch_size: 16
+  memory_size: 5000
+  target_update_freq: 500
+  tau: 0.01
+  
+  # Enhanced features (disabled for stability)
+  use_dueling: false
+  use_double_dqn: false
+  gradient_clip: 0.5
+  use_prioritized_replay: false
+  
+  # Agent type
+  agent_type: "standard_dqn"
+
+environment:
+  # CARLA connection
+  carla_host: "localhost"
+  carla_port: 2000
+  town: "Town03"
+  
+  # Simulation parameters
+  timestep: 0.1
+  time_scale: 1.0
+  max_episode_steps: 500
+  
+  # Sensor configuration (minimal)
+  enable_sensors: ["rgb_camera", "gnss"]
+  image_size: [64, 64]
+  
+  # Visualization (disabled)
+  enable_pygame_display: false
+  pygame_width: 800
+  pygame_height: 600
+  disable_sensor_views: true
+  
+  # Data saving (disabled)
+  save_sensor_data: false
+  sensor_data_save_path: "./data/sensor_data"
+  sensor_save_interval: 200
+
+training:
+  # Episode parameters
+  num_episodes: 500
+  max_steps_per_episode: 500
+  
+  # Evaluation
+  eval_interval: 50
+  num_eval_episodes: 3
+  epsilon_eval: 0.0
+  
+  # Saving and logging
+  save_interval: 50
+  save_dir: "./models"
+  log_level: "INFO"
+  load_model_from: null
+  
+  # Performance optimization
+  optimization_mode: "conservative"
+  enable_performance_monitoring: true
+  enable_observation_preprocessing: true
+
+preprocessing:
+  enable_compression: true
+  primary_camera_size: [32, 32]
+  secondary_camera_size: [24, 24]
+  use_grayscale_secondary: true
+  normalize_sensors: true
+  enable_caching: true
+  cache_size: 50
+
+monitoring:
+  enable_plots: true
+  save_interval: 50
+  plot_update_interval: 10
+  metrics_window_size: 50
+  log_dir: "./logs/monitoring"
+  
+  # Real-time dashboard
+  enable_dashboard: false
+  dashboard_port: 8080 

@@ -1,4 +1,4 @@
-# Use Ubuntu 22.04 as base image for compatibility with CARLA
+# Use Ubuntu 22.04 as base image for compatibility with CARLA 0.9.15
 FROM ubuntu:22.04
 
 # Set environment variables

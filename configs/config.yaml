@@ -77,6 +77,40 @@ agent:
   replay_buffer_capacity: 100000
   batch_size: 64
   update_every: 4
+  use_double_dqn: true
+  use_dueling_dqn: true
+  use_n_step_replay: true
+  n_step_value: 3
+  use_prioritized_replay: true
+  per_alpha: 0.6
+  per_beta_start: 0.4
+  per_beta_frames: 100000
+  use_noisy_nets: true
+  noisy_sigma0: 0.5
+  use_distributional_rl: true
+  dist_n_atoms: 51
+  dist_v_min: -10.0
+  dist_v_max: 10.0
+  use_lstm: false
+  lstm_hidden_size: 512
+  lstm_num_layers: 1
+
+  # Model Architecture Parameters
+  model_hidden_dims: [512, 256]
+  model_use_attention: false
+  model_use_batch_norm: true
+  model_dropout_rate: 0.1
+
+  # Advanced Training Options (DQNTrainer)
+  adaptive_epsilon: true
+  early_stopping: true
+  early_stopping_patience: 10
+  min_improvement_threshold: 0.01
+
+  # Agent Training Enhancements (DQNAgent)
+  use_mixed_precision: false
+  gradient_accumulation_steps: 1
+  max_grad_norm: 1.0
 
 # Reward Calculator Parameters
 reward_calculator:
@@ -85,7 +119,7 @@ reward_calculator:
   reward_goal_reached: 300.0
   penalty_per_step: -0.1
   reward_distance_factor: 1.0
-  waypoint_reached_threshold: 5.0
+  waypoint_reached_threshold: 1.0
   target_speed_kmh_default: 40.0
   
   # Speed related
