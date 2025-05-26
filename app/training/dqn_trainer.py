@@ -3,7 +3,7 @@ import numpy as np
 from collections import deque
 import os
 import logging
-from typing import Tuple
+from typing import Tuple, Optional
 import time
 from datetime import datetime
 
@@ -97,6 +97,49 @@ class DQNTrainer:
             else:
                 logger.info("No valid best_score.txt found in expected locations. Starting with fresh best score if not resuming a checkpoint score.")
 
+        # Enhanced curriculum learning tracking
+        self.curriculum_progress_tracker = {
+            'phase_completion_history': [],
+            'difficulty_adjustments': [],
+            'performance_trends': deque(maxlen=20),  # Track last 20 evaluations
+            'adaptive_threshold_adjustments': 0
+        }
+        
+        # Adaptive training parameters
+        self.adaptive_eval_interval = self.eval_interval
+        self.min_eval_interval = 10
+        self.max_eval_interval = 100
+        
+        # Performance-based epsilon adjustment
+        self.adaptive_epsilon_enabled = getattr(args, 'adaptive_epsilon', True)
+        self.base_epsilon_decay = self.epsilon_decay
+        self.performance_buffer = deque(maxlen=10)
+        
+        # Early stopping and training stability
+        self.early_stopping_enabled = getattr(args, 'early_stopping', True)
+        self.patience = getattr(args, 'early_stopping_patience', 50)
+        self.min_improvement = getattr(args, 'min_improvement_threshold', 0.01)
+        self.best_score_history = deque(maxlen=self.patience)
+        self.no_improvement_count = 0
+        
+        # Training stability monitoring
+        self.stability_metrics = {
+            'loss_variance_window': deque(maxlen=50),
+            'reward_variance_window': deque(maxlen=100),
+            'gradient_explosion_count': 0,
+            'performance_plateau_count': 0,
+            'curriculum_regression_count': 0
+        }
+        
+        # Advanced performance tracking
+        self.performance_analytics = {
+            'episode_efficiency': [],  # Steps to goal ratio
+            'learning_rate_history': [],
+            'phase_transition_scores': [],
+            'skill_retention_scores': {},  # Track performance across different skills
+            'exploration_efficiency': []  # How well epsilon is being used
+        }
+
     def _process_step(self, state, action) -> Tuple[dict, float, bool, bool, dict]:
         """Processes a single step in the environment.
         
@@ -135,6 +178,10 @@ class DQNTrainer:
             - runtime_error_occurred: Whether a runtime error happened
         """
         try:
+            # Reset LSTM hidden state at the beginning of the episode if agent uses LSTM
+            if hasattr(self.agent, 'use_lstm') and self.agent.use_lstm:
+                self.agent.reset_lstm_hidden_state(batch_size=1) # Batch size 1 for action selection
+                
             state, _ = self.env.reset()
             episode_score = 0.0
             episode_losses = []
@@ -309,25 +356,25 @@ class DQNTrainer:
                     if avg_score > self.best_eval_score:
                         logger.info(f"New best score: {avg_score:.2f} (previous: {self.best_eval_score:.2f})")
                         self.best_eval_score = avg_score
-                        os.makedirs(self.current_best_model_dir, exist_ok=True)
-                        self.agent.save(self.current_best_model_dir, model_name="best_dqn_agent")
+                os.makedirs(self.current_best_model_dir, exist_ok=True)
+                self.agent.save(self.current_best_model_dir, model_name="best_dqn_agent")
+                
+                # Save the best score to a file directly in the model_base_save_dir
+                with open(os.path.join(self.model_base_save_dir, "best_score.txt"), "w") as f:
+                    f.write(str(self.best_eval_score))
+                # Also save it inside the best_model directory for redundancy/clarity
+                with open(os.path.join(self.current_best_model_dir, "best_score.txt"), "w") as f:
+                    f.write(str(self.best_eval_score))
+                            
+                    # Save comprehensive metrics for the best model
+                    if hasattr(self, '_last_performance_report') and self._last_performance_report:
+                        best_model_report_path = os.path.join("reports/best_model_reports", f"best_score_{driving_score:.1f}_episode_{i_episode:03d}.txt")
+                        with open(best_model_report_path, "w") as f:
+                            self._write_comprehensive_report(f, self._last_performance_report, f"BEST MODEL PERFORMANCE REPORT (Episode {i_episode})")
                         
-                        # Save the best score to a file directly in the model_base_save_dir
-                        with open(os.path.join(self.model_base_save_dir, "best_score.txt"), "w") as f:
-                            f.write(str(self.best_eval_score))
-                        # Also save it inside the best_model directory for redundancy/clarity
-                        with open(os.path.join(self.current_best_model_dir, "best_score.txt"), "w") as f:
-                            f.write(str(self.best_eval_score))
-                            
-                        # Save comprehensive metrics for the best model
-                        if hasattr(self, '_last_performance_report') and self._last_performance_report:
-                            best_model_report_path = os.path.join("reports/best_model_reports", f"best_score_{driving_score:.1f}_episode_{i_episode:03d}.txt")
-                            with open(best_model_report_path, "w") as f:
-                                self._write_comprehensive_report(f, self._last_performance_report, f"BEST MODEL PERFORMANCE REPORT (Episode {i_episode})")
-                            
-                            # Also save in the model directory for backward compatibility
-                            with open(os.path.join(self.current_best_model_dir, "performance_report.txt"), "w") as f:
-                                self._write_comprehensive_report(f, self._last_performance_report, f"BEST MODEL PERFORMANCE REPORT (Episode {i_episode})")
+                        # Also save in the model directory for backward compatibility
+                        with open(os.path.join(self.current_best_model_dir, "performance_report.txt"), "w") as f:
+                            self._write_comprehensive_report(f, self._last_performance_report, f"BEST MODEL PERFORMANCE REPORT (Episode {i_episode})")
                 
             finally:
                 # Restore original num_eval_episodes
@@ -429,6 +476,10 @@ class DQNTrainer:
             - termination_reason: Why the episode ended
             - detailed_metrics: Dictionary with detailed performance metrics
         """
+        # Reset LSTM hidden state at the beginning of the evaluation episode
+        if hasattr(self.agent, 'use_lstm') and self.agent.use_lstm:
+            self.agent.reset_lstm_hidden_state(batch_size=1) # Batch size 1 for action selection
+            
         state, _ = self.env.reset()
         episode_score = 0
         max_eval_steps = getattr(self.env, 'spec', {}).get('max_episode_steps', 1000) if hasattr(self.env, 'spec') else 1000
@@ -804,3 +855,157 @@ class DQNTrainer:
         finally:
             self._save_final_model()
             logger.info("Training loop finished.") 
+
+    def _adaptive_curriculum_adjustment(self, performance_report: dict, i_episode: int):
+        """Adaptively adjust curriculum based on agent performance."""
+        if not hasattr(self.env, 'curriculum_manager') or not self.env.curriculum_manager:
+            return
+            
+        driving_score = performance_report.get('overall_driving_score', 0.0)
+        goal_rate = performance_report.get('goal_success_rate', 0.0)
+        
+        # Track performance trends
+        self.curriculum_progress_tracker['performance_trends'].append({
+            'episode': i_episode,
+            'driving_score': driving_score,
+            'goal_rate': goal_rate,
+            'phase': self.env.curriculum_manager.current_phase_idx
+        })
+        
+        # Calculate performance trend
+        if len(self.curriculum_progress_tracker['performance_trends']) >= 5:
+            recent_scores = [p['driving_score'] for p in list(self.curriculum_progress_tracker['performance_trends'])[-5:]]
+            trend = (recent_scores[-1] - recent_scores[0]) / len(recent_scores)
+            
+            # Adaptive evaluation interval based on performance stability
+            if abs(trend) < 2.0:  # Performance is stable
+                self.adaptive_eval_interval = min(self.max_eval_interval, self.adaptive_eval_interval + 5)
+            else:  # Performance is changing rapidly
+                self.adaptive_eval_interval = max(self.min_eval_interval, self.adaptive_eval_interval - 5)
+            
+            # Log adaptive changes
+            if self.adaptive_eval_interval != self.eval_interval:
+                logger.info(f"Adaptive eval interval adjusted to {self.adaptive_eval_interval} (trend: {trend:.2f})")
+
+    def _adaptive_epsilon_decay(self, performance_report: dict, current_epsilon: float) -> float:
+        """Adjust epsilon decay based on recent performance."""
+        if not self.adaptive_epsilon_enabled:
+            return self._update_epsilon(current_epsilon)
+            
+        driving_score = performance_report.get('overall_driving_score', 0.0)
+        self.performance_buffer.append(driving_score)
+        
+        if len(self.performance_buffer) >= 5:
+            recent_avg = np.mean(list(self.performance_buffer))
+            
+            # Adjust epsilon decay based on performance
+            if recent_avg > 70:  # Good performance - decay epsilon faster
+                adjusted_decay = self.base_epsilon_decay * 0.98
+            elif recent_avg < 30:  # Poor performance - decay epsilon slower
+                adjusted_decay = self.base_epsilon_decay * 1.02
+            else:
+                adjusted_decay = self.base_epsilon_decay
+                
+            # Apply adjusted decay
+            new_epsilon = max(self.epsilon_end, adjusted_decay * current_epsilon)
+            
+            # Log significant changes
+            if abs(adjusted_decay - self.base_epsilon_decay) > 0.001:
+                logger.debug(f"Adaptive epsilon decay: {adjusted_decay:.4f} (performance: {recent_avg:.1f})")
+                
+            return new_epsilon
+        
+        return self._update_epsilon(current_epsilon)
+
+    def _check_early_stopping(self, current_score: float, i_episode: int) -> bool:
+        """Check if training should stop early based on performance plateau."""
+        if not self.early_stopping_enabled:
+            return False
+            
+        self.best_score_history.append(current_score)
+        
+        # Need sufficient history to make decision
+        if len(self.best_score_history) < self.patience:
+            return False
+            
+        # Check if recent performance shows improvement
+        recent_best = max(list(self.best_score_history)[-10:])  # Best in last 10 evaluations
+        historical_best = max(list(self.best_score_history)[:-10])  # Best before recent 10
+        
+        improvement = recent_best - historical_best
+        
+        if improvement < self.min_improvement:
+            self.no_improvement_count += 1
+            if self.no_improvement_count >= 3:  # 3 consecutive evaluations without improvement
+                logger.info(f"Early stopping triggered at episode {i_episode}")
+                logger.info(f"No significant improvement ({improvement:.3f} < {self.min_improvement}) for {self.no_improvement_count} evaluations")
+                return True
+        else:
+            self.no_improvement_count = 0
+            
+        return False
+
+    def _monitor_training_stability(self, episode_score: float, avg_loss: Optional[float]):
+        """Monitor training stability and detect potential issues."""
+        # Track reward variance
+        self.stability_metrics['reward_variance_window'].append(episode_score)
+        
+        if avg_loss is not None:
+            self.stability_metrics['loss_variance_window'].append(avg_loss)
+            
+            # Check for gradient explosion (very high loss)
+            if avg_loss > 100:  # Configurable threshold
+                self.stability_metrics['gradient_explosion_count'] += 1
+                if self.stability_metrics['gradient_explosion_count'] > 5:
+                    logger.warning("Potential gradient explosion detected - consider reducing learning rate")
+        
+        # Check for performance plateau
+        if len(self.stability_metrics['reward_variance_window']) >= 50:
+            recent_variance = np.var(list(self.stability_metrics['reward_variance_window'])[-20:])
+            if recent_variance < 0.1:  # Very low variance indicates plateau
+                self.stability_metrics['performance_plateau_count'] += 1
+                if self.stability_metrics['performance_plateau_count'] % 10 == 0:
+                    logger.info(f"Performance plateau detected - variance: {recent_variance:.4f}")
+
+    def _log_training_analytics(self, i_episode: int, episode_score: float, steps_taken: int, 
+                               termination_reason: str, current_epsilon: float):
+        """Log advanced training analytics."""
+        # Episode efficiency (lower is better)
+        if termination_reason in ["goal_reached", "goal_reached_and_stopped"]:
+            efficiency = steps_taken / 1000.0  # Normalized by max steps
+            self.performance_analytics['episode_efficiency'].append(efficiency)
+        
+        # Exploration efficiency
+        if hasattr(self.agent, 'training_metrics'):
+            exploration_ratio = current_epsilon * (1.0 - episode_score / 100.0)  # Penalty for poor performance with high exploration
+            self.performance_analytics['exploration_efficiency'].append(exploration_ratio)
+        
+        # Log to TensorBoard every 10 episodes
+        if i_episode % 10 == 0:
+            # Training stability metrics
+            if self.stability_metrics['reward_variance_window']:
+                reward_variance = np.var(list(self.stability_metrics['reward_variance_window']))
+                self.tb_logger.log_scalar("stability/reward_variance", reward_variance, i_episode)
+            
+            if self.stability_metrics['loss_variance_window']:
+                loss_variance = np.var(list(self.stability_metrics['loss_variance_window']))
+                self.tb_logger.log_scalar("stability/loss_variance", loss_variance, i_episode)
+            
+            # Performance analytics
+            if self.performance_analytics['episode_efficiency']:
+                avg_efficiency = np.mean(self.performance_analytics['episode_efficiency'][-20:])
+                self.tb_logger.log_scalar("analytics/episode_efficiency", avg_efficiency, i_episode)
+            
+            if self.performance_analytics['exploration_efficiency']:
+                avg_exploration_eff = np.mean(self.performance_analytics['exploration_efficiency'][-20:])
+                self.tb_logger.log_scalar("analytics/exploration_efficiency", avg_exploration_eff, i_episode)
+            
+            # Agent-specific metrics
+            if hasattr(self.agent, 'training_metrics'):
+                if self.agent.training_metrics['gradient_norms']:
+                    avg_grad_norm = np.mean(self.agent.training_metrics['gradient_norms'][-20:])
+                    self.tb_logger.log_scalar("training/avg_gradient_norm", avg_grad_norm, i_episode)
+                
+                if self.agent.training_metrics['learning_rates']:
+                    current_lr = self.agent.training_metrics['learning_rates'][-1]
+                    self.tb_logger.log_scalar("training/learning_rate", current_lr, i_episode) 
