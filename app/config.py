@@ -235,6 +235,7 @@ REWARD_CALC_PHASE0_OFFROAD_NO_WAYPOINT_MULTIPLIER = get_reward_config("phase0.of
 # Action Mapping
 DISCRETE_ACTION_MAP = get_action_config("discrete_action_map", {})
 DISCRETE_ACTION_MAP_NO_REVERSE = get_action_config("discrete_action_map_no_reverse", {})
+DISCRETE_ACTION_MAP_NO_STEERING = get_action_config("discrete_action_map_no_steering", {})
 NUM_DISCRETE_ACTIONS = len(DISCRETE_ACTION_MAP)
 
 # Curriculum Phases

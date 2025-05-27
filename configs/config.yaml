@@ -10,8 +10,8 @@ general:
 defaults:
   # General Training Arguments
   log_level: "INFO"
-  num_episodes: 1000
-  max_steps_per_episode: 1000
+  num_episodes: null  # Determined by curriculum phases
+  max_steps_per_episode: 3000
   save_interval: 50
   eval_interval: 25
   num_eval_episodes: 5
@@ -107,10 +107,24 @@ agent:
   early_stopping_patience: 10
   min_improvement_threshold: 0.01
 
-  # Agent Training Enhancements (DQNAgent)
-  use_mixed_precision: false
+  # Enhanced Agent Training Features
+  use_mixed_precision: true
   gradient_accumulation_steps: 1
   max_grad_norm: 1.0
+  
+  # New Enhanced Features
+  use_multi_step_bootstrap: true
+  multi_step_n: 3
+  exploration_strategy: "epsilon_greedy"  # Options: "epsilon_greedy", "noisy_nets", "ucb"
+  adaptive_exploration: true
+  weight_decay: 0.0001
+  use_cosine_annealing: true
+  curriculum_aware_training: true
+  
+  # Exploration Strategy Parameters
+  ucb_confidence: 2.0
+  adaptive_epsilon_factor: 1.5
+  exploration_efficiency_threshold: 0.7
 
 # Reward Calculator Parameters
 reward_calculator:
@@ -269,6 +283,45 @@ actions:
       reverse: false
       name: "Brake"  # Remapped Reverse
 
+  # Action mapping when steering is disallowed (forward-only driving)
+  discrete_action_map_no_steering:
+    0:
+      throttle: 0.6
+      steer: 0.0
+      brake: 0.0
+      reverse: false
+      name: "Forward-Medium"
+    1:
+      throttle: 0.3
+      steer: 0.0
+      brake: 0.0
+      reverse: false
+      name: "Forward-Slow"
+    2:
+      throttle: 0.8
+      steer: 0.0
+      brake: 0.0
+      reverse: false
+      name: "Forward-Fast"
+    3:
+      throttle: 0.0
+      steer: 0.0
+      brake: 1.0
+      reverse: false
+      name: "Brake"
+    4:
+      throttle: 0.2
+      steer: 0.0
+      brake: 0.0
+      reverse: false
+      name: "Coast"
+    5:
+      throttle: 0.0
+      steer: 0.0
+      brake: 0.5
+      reverse: false
+      name: "Brake-Light"
+
 # Curriculum Learning Phases
 curriculum:
   # Automatic evaluation settings
@@ -286,8 +339,8 @@ curriculum:
       min_driving_score: 55.0          # Minimum overall driving score
 
   default_phases:
-    - name: "Phase0_ForwardOnly_NoSteering"
-      episodes: 100
+    - name: "Phase1_ForwardOnly_NoSteering"
+      episodes: 50
       reward_config: "phase0"
       spawn_config: "fixed_straight"
       traffic_config:
@@ -295,7 +348,7 @@ curriculum:
         num_walkers: 0
         type: "none"
       allow_reverse: false
-      allow_steering: false  # NEW: Block all steering actions
+      allow_steering: false
       max_steps: 200
       phase0_target_distance_m: 50.0
       phase0_spawn_point_idx: 41
@@ -305,8 +358,8 @@ curriculum:
         min_sidewalk_free_rate: 0.95
         max_violations_per_episode: 0.2
       
-    - name: "Phase0_BasicControl_Straight"
-      episodes: 200
+    - name: "Phase2_BasicControl_Straight"
+      episodes: 100
       reward_config: "phase0"
       spawn_config: "fixed_straight"
       traffic_config:
@@ -323,7 +376,7 @@ curriculum:
         min_sidewalk_free_rate: 0.95
         max_violations_per_episode: 0.5
       
-    - name: "Phase0_BasicControl_SimpleTurns"
+    - name: "Phase3_BasicControl_SimpleTurns"
       episodes: 300
       reward_config: "phase0"
       spawn_config: "fixed_simple_turns"
@@ -333,6 +386,7 @@ curriculum:
         type: "none"
       require_stop_at_goal: true
       allow_reverse: false
+      allow_steering: true  # NEW: Enable steering for turning scenarios
       max_steps: 500
       evaluation_criteria:
         min_goal_completion_rate: 0.6
@@ -340,7 +394,7 @@ curriculum:
         min_sidewalk_free_rate: 0.9
         max_violations_per_episode: 0.8
       
-    - name: "Phase1_LaneFollowing_NoTraffic"
+    - name: "Phase4_LaneFollowing_NoTraffic"
       episodes: 500
       reward_config: "standard"
       spawn_config: "random_gentle_curves"
@@ -350,6 +404,7 @@ curriculum:
         type: "none"
       require_stop_at_goal: false
       allow_reverse: false
+      allow_steering: true 
       max_steps: 1000
       evaluation_criteria:
         min_goal_completion_rate: 0.5
@@ -357,7 +412,7 @@ curriculum:
         min_sidewalk_free_rate: 0.85
         max_violations_per_episode: 1.2
       
-    - name: "Phase2_LaneFollowing_LightStaticTraffic"
+    - name: "Phase5_LaneFollowing_LightStaticTraffic"
       episodes: 750
       reward_config: "standard"
       spawn_config: "random_urban"
@@ -367,6 +422,7 @@ curriculum:
         type: "static"
       require_stop_at_goal: false
       allow_reverse: false
+      allow_steering: true  # NEW: Enable steering for urban navigation
       max_steps: 1200
       evaluation_criteria:
         min_goal_completion_rate: 0.4
@@ -374,7 +430,7 @@ curriculum:
         min_sidewalk_free_rate: 0.8
         max_violations_per_episode: 1.5
       
-    - name: "Phase2_5_ReverseManeuvers"
+    - name: "Phase6_ReverseManeuvers"
       episodes: 250
       reward_config: "standard"
       spawn_config: "random_short_segment_for_reverse"
@@ -384,6 +440,7 @@ curriculum:
         type: "none"
       require_stop_at_goal: true
       allow_reverse: true
+      allow_steering: true  # NEW: Enable steering for reverse maneuvers
       max_steps: 400
       evaluation_criteria:
         min_goal_completion_rate: 0.5
@@ -391,7 +448,7 @@ curriculum:
         min_sidewalk_free_rate: 0.85
         max_violations_per_episode: 1.0
       
-    - name: "Phase3_TrafficLights_NoDynamicTraffic"
+    - name: "Phase7_TrafficLights_NoDynamicTraffic"
       episodes: 600
       reward_config: "standard"
       spawn_config: "random_urban_with_traffic_lights"
@@ -401,6 +458,7 @@ curriculum:
         type: "static"
       require_stop_at_goal: true
       allow_reverse: false
+      allow_steering: true  # NEW: Enable steering for traffic light navigation
       max_steps: 1500
       evaluation_criteria:
         min_goal_completion_rate: 0.35
@@ -408,7 +466,7 @@ curriculum:
         min_sidewalk_free_rate: 0.75
         max_violations_per_episode: 2.0
       
-    - name: "Phase4_LightDynamicTraffic_Intersections"
+    - name: "Phase8_LightDynamicTraffic_Intersections"
       episodes: 1000
       reward_config: "standard"
       spawn_config: "random_urban_with_traffic_lights"
@@ -418,6 +476,7 @@ curriculum:
         type: "dynamic"
       require_stop_at_goal: false
       allow_reverse: true
+      allow_steering: true  # NEW: Enable steering for dynamic traffic and intersections
       max_steps: 2000
       evaluation_criteria:
         min_goal_completion_rate: 0.3
@@ -425,7 +484,7 @@ curriculum:
         min_sidewalk_free_rate: 0.7
         max_violations_per_episode: 2.5
       
-    - name: "Phase5_ComplexUrbanDriving"
+    - name: "Phase9_ComplexUrbanDriving"
       episodes: 1500
       reward_config: "standard"
       spawn_config: "random_urban_full"
@@ -435,6 +494,7 @@ curriculum:
         type: "dynamic"
       require_stop_at_goal: false
       allow_reverse: true
+      allow_steering: true  # NEW: Enable steering for complex urban driving
       max_steps: 2500
       evaluation_criteria:
         min_goal_completion_rate: 0.25
@@ -442,7 +502,7 @@ curriculum:
         min_sidewalk_free_rate: 0.65
         max_violations_per_episode: 3.0
       
-    - name: "Phase6_DenseTrafficAndPedestrians"
+    - name: "Phase10_DenseTrafficAndPedestrians"
       episodes: 2000
       reward_config: "standard"
       spawn_config: "random_urban_full"
@@ -452,6 +512,7 @@ curriculum:
         type: "dynamic_traffic_light_aware"
       require_stop_at_goal: false
       allow_reverse: true
+      allow_steering: true  # NEW: Enable steering for dense traffic scenarios
       max_steps: 3000
       evaluation_criteria:
         min_goal_completion_rate: 0.2
