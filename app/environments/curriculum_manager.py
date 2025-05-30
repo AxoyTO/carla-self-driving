@@ -12,7 +12,8 @@ class CurriculumManager:
     def __init__(self, world: carla.World, map_obj: carla.Map, 
                  initial_spawn_points: List[carla.Transform],
                  phases: Optional[List[Dict[str, Any]]] = None, 
-                 logger: Optional[logging.Logger] = None):
+                 logger: Optional[logging.Logger] = None,
+                 start_from_phase: Optional[int] = None):
         """Initialize the CurriculumManager.
         Args:
             world: CARLA world instance (used for random location from navigation).
@@ -20,6 +21,7 @@ class CurriculumManager:
             initial_spawn_points: A list of available spawn points from the map.
             phases: A list of curriculum phase configurations. Uses default if None.
             logger: Optional logger instance.
+            start_from_phase: Optional phase number (1-based) to start from. Skips previous phases.
         """
         self.world = world
         self.map = map_obj
@@ -27,7 +29,17 @@ class CurriculumManager:
         self.phases = phases if phases is not None else config.CARLA_DEFAULT_CURRICULUM_PHASES
         self.logger = logger if logger else logging.getLogger(__name__ + ".CurriculumManager")
 
-        self.current_phase_idx: int = 0
+        # Set starting phase based on start_from_phase parameter
+        if start_from_phase is not None:
+            if start_from_phase < 1 or start_from_phase > len(self.phases):
+                self.logger.error(f"Invalid start_from_phase: {start_from_phase}. Must be between 1 and {len(self.phases)}.")
+                self.current_phase_idx: int = 0  # Default to first phase
+            else:
+                self.current_phase_idx: int = start_from_phase - 1  # Convert to 0-based indexing
+                self.logger.info(f"Starting from phase {start_from_phase}: '{self.phases[self.current_phase_idx]['name']}'")
+        else:
+            self.current_phase_idx: int = 0
+            
         self.episode_in_current_phase: int = 0
         self.total_episodes_tracked: int = 0 # Total episodes run through this manager instance
 
@@ -219,7 +231,9 @@ class CurriculumManager:
         else:
             # Completed all phases
             if self.episode_in_current_phase == current_phase_cfg["episodes"] + 1: # Log once after last phase completion
-                self.logger.info(f"Entire curriculum completed. Continuing with settings from last phase: '{current_phase_cfg['name']}'.")
+                self.logger.info(f"Final phase '{current_phase_cfg['name']}' completed.")
+                self.logger.info(f"All {len(self.phases)} curriculum phases have been completed!")
+                self.logger.info(f"Total episodes tracked by curriculum: {self.total_episodes_tracked}")
             # Keep current_phase_idx at max, episode_in_current_phase will continue to increment beyond episodes count
 
     def get_current_phase_config(self) -> Optional[Dict[str, Any]]:
@@ -234,6 +248,10 @@ class CurriculumManager:
         if cfg:
             return cfg["name"], self.episode_in_current_phase, cfg["episodes"]
         return "UnknownPhase", 0, 0
+    
+    def get_current_phase_number(self) -> int:
+        """Returns the current phase number (1-based indexing)."""
+        return self.current_phase_idx + 1
 
     def determine_spawn_and_target(self) -> Tuple[Optional[carla.Transform], Optional[carla.Waypoint]]:
         current_phase_cfg = self.get_current_phase_config()
