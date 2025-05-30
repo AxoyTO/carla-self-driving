@@ -222,6 +222,13 @@ SIDEWALK_DETECTION_DEFAULT = get_reward_config("sidewalk_detection.default", {
 
 STOP_AT_GOAL_SPEED_THRESHOLD = get_reward_config("stop_at_goal_speed_threshold", 0.2)
 
+# Distance-based penalty for max steps reached
+MAX_STEPS_DISTANCE_PENALTY_ENABLED = get_reward_config("max_steps_distance_penalty.enabled", True)
+MAX_STEPS_DISTANCE_PENALTY_MAX = get_reward_config("max_steps_distance_penalty.max_penalty", -200.0)
+MAX_STEPS_DISTANCE_PENALTY_MIN = get_reward_config("max_steps_distance_penalty.min_penalty", -50.0)
+MAX_STEPS_DISTANCE_PENALTY_MAX_DISTANCE = get_reward_config("max_steps_distance_penalty.max_distance_threshold", 100.0)
+MAX_STEPS_DISTANCE_PENALTY_CLOSE_MULTIPLIER = get_reward_config("max_steps_distance_penalty.close_distance_multiplier", 3.0)
+
 # Phase 0 Specific Adjustments
 REWARD_CALC_PHASE0_PENALTY_PER_STEP = get_reward_config("phase0.penalty_per_step", -0.01)
 REWARD_CALC_PHASE0_DISTANCE_FACTOR_MULTIPLIER = get_reward_config("phase0.distance_factor_multiplier", 2.5)
@@ -252,6 +259,11 @@ CURRICULUM_COMPLETION_CRITERIA = get_curriculum_config("evaluation.completion_cr
     "max_violations_per_episode": 1.0,
     "min_driving_score": 55.0
 })
+
+# Comprehensive Evaluation Parameters
+COMPREHENSIVE_EVAL_INTERVAL = get_default_config("comprehensive_eval_interval", 100)
+COMPREHENSIVE_EVAL_MIN_PHASE = get_default_config("comprehensive_eval_min_phase", 3)
+USE_COMPREHENSIVE_FOR_BEST_MODEL = get_default_config("use_comprehensive_for_best_model", True)
 
 # --- Helper function to update config from args ---
 def update_config_from_args(config_module, args):

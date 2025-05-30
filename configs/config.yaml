@@ -24,6 +24,11 @@ defaults:
   epsilon_decay: 0.995
   epsilon_eval: 0.01
   
+  # Comprehensive Evaluation (for best model selection across all phases)
+  comprehensive_eval_interval: 100      # Run comprehensive evaluation every N episodes
+  comprehensive_eval_min_phase: 3       # Start comprehensive evaluation after phase N
+  use_comprehensive_for_best_model: true # Use comprehensive scores for best model selection
+  
   # Display Configuration
   enable_pygame_display: false
   pygame_width: 1920
@@ -71,12 +76,12 @@ environment:
 
 # Agent Parameters
 agent:
-  learning_rate: 0.0001
+  learning_rate: 0.00005
   gamma: 0.99
   tau: 0.001
   replay_buffer_capacity: 100000
-  batch_size: 64
-  update_every: 4
+  batch_size: 128
+  update_every: 2
   use_double_dqn: true
   use_dueling_dqn: true
   use_n_step_replay: true
@@ -99,7 +104,7 @@ agent:
   model_hidden_dims: [512, 256]
   model_use_attention: false
   model_use_batch_norm: true
-  model_dropout_rate: 0.1
+  model_dropout_rate: 0.15
 
   # Advanced Training Options (DQNTrainer)
   adaptive_epsilon: true
@@ -109,8 +114,14 @@ agent:
 
   # Enhanced Agent Training Features
   use_mixed_precision: true
-  gradient_accumulation_steps: 1
-  max_grad_norm: 1.0
+  gradient_accumulation_steps: 4
+  max_grad_norm: 0.5
+  
+  # GPU Optimization Features
+  prefetch_factor: 4
+  num_workers: 2
+  pin_memory: true
+  async_data_loading: true
   
   # New Enhanced Features
   use_multi_step_bootstrap: true
@@ -192,6 +203,14 @@ reward_calculator:
   
   # Goal Requirements
   stop_at_goal_speed_threshold: 0.2
+  
+  # Distance-based penalty for max steps reached
+  max_steps_distance_penalty:
+    enabled: true                    # Enable/disable distance-based penalty
+    max_penalty: -200.0             # Maximum penalty for being very far from goal
+    min_penalty: -50.0              # Minimum penalty for being close to goal
+    max_distance_threshold: 100.0   # Distance (meters) at which maximum penalty is applied
+    close_distance_multiplier: 3.0  # Multiplier of waypoint threshold for "close" distance
   
   # Phase 0 Specific Adjustments
   phase0:
@@ -518,4 +537,9 @@ curriculum:
         min_goal_completion_rate: 0.2
         min_collision_free_rate: 0.55
         min_sidewalk_free_rate: 0.6
-        max_violations_per_episode: 3.5 
+        max_violations_per_episode: 3.5
+
+# Comprehensive Evaluation (for best model selection across all phases)
+comprehensive_eval_interval: 100      # Run comprehensive evaluation every N episodes
+comprehensive_eval_min_phase: 3       # Start comprehensive evaluation after phase N
+use_comprehensive_for_best_model: true # Use comprehensive scores for best model selection 

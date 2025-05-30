@@ -41,7 +41,11 @@ def _find_best_model_to_load(base_model_save_dir: str, logger_instance: logging.
         try:
             with open(score_file_path, "r") as f:
                 score = float(f.read().strip())
-            logger_instance.debug(f"Found score {score:.2f} in {score_file_path}")
+            
+            # Determine if this is a driving score or legacy raw score
+            score_type = "driving score" if score <= 100 else "legacy raw score"
+            logger_instance.debug(f"Found {score_type} {score:.2f} in {score_file_path}")
+            
             if score > best_score_so_far: # Technically, only one 'best_model' dir, so this check is simple
                 best_score_so_far = score
                 path_to_best_model_dir = potential_best_model_dir
@@ -49,7 +53,10 @@ def _find_best_model_to_load(base_model_save_dir: str, logger_instance: logging.
             logger_instance.warning(f"Could not read or parse score file at {score_file_path}: {e}")
     
     if path_to_best_model_dir:
-        logger_instance.info(f"Determined best model to load: {path_to_best_model_dir} with score {best_score_so_far:.2f}")
+        score_type = "driving score" if best_score_so_far <= 100 else "legacy raw score"
+        logger_instance.info(f"Determined best model to load: {path_to_best_model_dir} with {score_type} {best_score_so_far:.2f}")
+        if best_score_so_far > 100:
+            logger_instance.info("Note: Legacy model detected. Training will adapt to new driving score system.")
     else:
         logger_instance.info(f"No best_model directory with a valid best_score.txt found directly in {base_model_save_dir}.")
         
