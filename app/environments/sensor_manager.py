@@ -167,6 +167,7 @@ class SensorManager:
             self._create_camera_sensor('semantic_camera', seg_transform, camera_handler.setup_semantic_segmentation_camera)
 
     def _create_camera_sensor(self, sensor_key: str, transform: carla.Transform, setup_func):
+        # Use optimized camera setup with performance enhancements
         agent_cam = setup_func(
             self.world, self.vehicle, self.env_ref, self.image_width, self.image_height,
             self.fov, self._get_scaled_sensor_tick(), transform, sensor_key
@@ -185,15 +186,23 @@ class SensorManager:
     def _setup_lidar_sensors(self):
         lidar_transform = carla.Transform(carla.Location(x=0.0, z=2.5))
         if self.observation_space and 'lidar' in self.observation_space.spaces:
-            lidar_actor = lidar_handler.setup_lidar_sensor(
-                self.world, self.vehicle, self.env_ref, self.lidar_config,
+            # Use optimized LIDAR setup with processed point count
+            lidar_config_with_processing = self.lidar_config.copy()
+            lidar_config_with_processing['num_points_processed'] = lidar_handler.DEFAULT_LIDAR_NUM_POINTS_PROCESSED
+            
+            lidar_actor = lidar_handler.setup_lidar_sensor_optimized(
+                self.world, self.vehicle, self.env_ref, lidar_config_with_processing,
                 lidar_transform, 'lidar'
             )
             self._add_sensor_to_list(lidar_actor, 'agent')
 
         if self.observation_space and 'semantic_lidar' in self.observation_space.spaces:
-            semantic_lidar_actor = lidar_handler.setup_semantic_lidar_sensor(
-                self.world, self.vehicle, self.env_ref, self.lidar_config, 
+            # Use optimized semantic LIDAR setup with processed point count
+            semantic_lidar_config_with_processing = self.lidar_config.copy()
+            semantic_lidar_config_with_processing['num_points_processed'] = lidar_handler.DEFAULT_LIDAR_NUM_POINTS_PROCESSED
+            
+            semantic_lidar_actor = lidar_handler.setup_semantic_lidar_sensor_optimized(
+                self.world, self.vehicle, self.env_ref, semantic_lidar_config_with_processing, 
                 lidar_transform, 'semantic_lidar'
             )
             self._add_sensor_to_list(semantic_lidar_actor, 'agent')
@@ -238,7 +247,7 @@ class SensorManager:
                 self.logger.warning("Lane invasion sensor: Environment reference is None")
         lane_sensor.listen(lane_cb)
         self._add_sensor_to_list(lane_sensor, 'agent')
-        self.logger.info("Lane invasion sensor setup completed.")
+        self.logger.debug("Lane invasion sensor setup completed.")
 
     def _setup_spectator_camera(self):
         bp = camera_handler._setup_camera_blueprint(
