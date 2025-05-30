@@ -44,8 +44,9 @@ class CarlaEnv(BaseEnv):
                  sensor_save_base_path=config.SENSOR_DATA_SAVE_PATH, 
                  sensor_save_interval=100, 
                  curriculum_phases: Optional[List[Dict[str, Any]]] = None,
-                 run_name_prefix: Optional[str] = "carla_run"
-                ):
+                 run_name_prefix: Optional[str] = "carla_run",
+                 start_from_phase: Optional[int] = None
+               ):
         super().__init__()
         self.logger = logging.getLogger(f"CarlaEnv.{town}")
         self.logger.setLevel(log_level)
@@ -72,6 +73,9 @@ class CarlaEnv(BaseEnv):
         
         self.latest_sensor_data: Dict[str, Any] = {}
         self._initialize_latest_sensor_data_keys()
+
+        # Performance optimizations use ThreadPoolExecutor instead of async event loops
+        # for better compatibility with CARLA sensor callbacks
 
         self.collision_info = {'count': 0, 'last_intensity': 0.0, 'last_other_actor_id': "N/A", 'last_other_actor_type': "N/A"}
         self.relevant_traffic_light_state_debug = None
@@ -139,7 +143,8 @@ class CarlaEnv(BaseEnv):
                 map_obj=self.map, 
                 initial_spawn_points=self._spawn_points, 
                 phases=curriculum_phases, 
-                logger=self.logger
+                logger=self.logger,
+                start_from_phase=start_from_phase
             )
             if self.client: 
                 try: 
@@ -260,6 +265,27 @@ class CarlaEnv(BaseEnv):
     def _get_observation(self) -> OrderedDict:
         if self.sensor_manager: return self.sensor_manager.get_observation_data()
         self.logger.warning("SensorManager not init; returning zeroed observation."); return self._get_zeroed_observation()
+
+    def _get_zeroed_observation(self) -> OrderedDict:
+        """
+        Return a zeroed observation that matches the observation space structure.
+        This is used when sensors are not ready or when there's an error condition.
+        
+        Returns:
+            OrderedDict: Zeroed observation with the correct shape and dtype for each sensor
+        """
+        obs = OrderedDict()
+        
+        if self._observation_space is None:
+            self.logger.error("Observation space not defined, cannot create zeroed observation")
+            return obs
+        
+        # Create zeroed arrays for each sensor based on the observation space
+        for key, space_def in self._observation_space.spaces.items():
+            obs[key] = np.zeros(space_def.shape, dtype=space_def.dtype)
+        
+        self.logger.debug(f"Created zeroed observation with keys: {list(obs.keys())}")
+        return obs
 
     def _apply_action(self, action: int):
         vehicle = self.vehicle_manager.get_vehicle()
@@ -470,7 +496,7 @@ class CarlaEnv(BaseEnv):
                     if self.visualizer: self.visualizer.update_goal_waypoint_debug(self.target_waypoint)
                 else:
                     if not self.global_plan_ended_logged:
-                        self.logger.info("Reached end of global plan segments.")
+                        self.logger.debug("Reached end of global plan segments.")
                         self.global_plan_ended_logged = True
                     # self.target_waypoint will remain the last one, _check_done handles final goal
 
@@ -513,6 +539,23 @@ class CarlaEnv(BaseEnv):
         terminated, term_info = self._check_done(current_loc, final_destination_location if self.global_plan else None)
         self.last_termination_reason_debug = term_info.get("termination_reason", "terminated") if terminated else "Running"
 
+        # Apply distance-based penalty if terminated due to max steps reached
+        if terminated and term_info.get("termination_reason") == "max_steps_reached":
+            distance_penalty = self.reward_calculator.calculate_max_steps_distance_penalty(
+                current_location=current_loc,
+                target_waypoint=self.target_waypoint,
+                distance_to_final_goal=self.dist_to_goal_debug
+            )
+            
+            if distance_penalty != 0.0:  # Only apply and log if penalty is enabled and non-zero
+                reward += distance_penalty
+                self.step_reward_debug += distance_penalty
+                self.episode_score_debug += distance_penalty
+                self.logger.debug(f"Applied max steps distance penalty: {distance_penalty:.2f} (distance to goal: {self.dist_to_goal_debug:.2f}m)")
+                
+                if self.visualizer:
+                    self.visualizer.add_notification(f"MAX STEPS! Distance penalty: {distance_penalty:.1f}", 5.0, (255, 100, 0))
+
         if terminated and self.episode_start_time:
             duration = (datetime.now() - self.episode_start_time).total_seconds()
             self.total_episode_time += timedelta(seconds=duration)
@@ -538,6 +581,9 @@ class CarlaEnv(BaseEnv):
         if self.world and self.world.get_settings().synchronous_mode:
             settings = self.world.get_settings(); settings.synchronous_mode = False; settings.fixed_delta_seconds = None
             self.world.apply_settings(settings) 
+            
+        # Thread pools will be cleaned up automatically by the garbage collector
+                
         self.world, self.client = None, None
         self.logger.info("Closed CARLA environment.")
         if self.episode_count > 0:
