@@ -80,8 +80,8 @@ agent:
   gamma: 0.99
   tau: 0.001
   replay_buffer_capacity: 100000
-  batch_size: 128
-  update_every: 2
+  batch_size: 32
+  update_every: 4
   use_double_dqn: true
   use_dueling_dqn: true
   use_n_step_replay: true
@@ -114,14 +114,8 @@ agent:
 
   # Enhanced Agent Training Features
   use_mixed_precision: true
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 1
   max_grad_norm: 0.5
-  
-  # GPU Optimization Features
-  prefetch_factor: 4
-  num_workers: 2
-  pin_memory: true
-  async_data_loading: true
   
   # New Enhanced Features
   use_multi_step_bootstrap: true
