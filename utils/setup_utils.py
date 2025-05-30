@@ -27,10 +27,14 @@ def parse_arguments():
     parser.add_argument("--log-level", type=str, default=config.LOG_LEVEL,
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help=f"Set the logging level (default: {config.LOG_LEVEL})")
-    parser.add_argument("--num-episodes", type=int, default=config.NUM_EPISODES,
-                        help=f"Total training episodes (default: {config.NUM_EPISODES}).")
+    # Handle case where NUM_EPISODES might be None (curriculum-controlled)
+    default_episodes = config.NUM_EPISODES if config.NUM_EPISODES is not None else 1000
+    parser.add_argument("--num-episodes", type=int, default=default_episodes,
+                        help=f"Total training episodes (default: {default_episodes}). Ignored when curriculum learning is used.")
     parser.add_argument("--max-steps-per-episode", type=int, default=config.MAX_STEPS_PER_EPISODE,
                         help=f"Max steps per training episode (default: {config.MAX_STEPS_PER_EPISODE}).")
+    parser.add_argument("--start-from-phase", type=int, default=None,
+                        help="Start training from a specific phase number (1-based indexing). Skips all previous phases.")
 
     # --- Model Saving/Loading ---
     parser.add_argument("--save-dir", type=str, default=config.SAVE_DIR,
@@ -47,6 +51,18 @@ def parse_arguments():
                         help=f"Number of episodes to run for each evaluation (default: {config.NUM_EVAL_EPISODES}).")
     parser.add_argument("--epsilon-eval", type=float, default=config.EPSILON_EVAL,
                         help=f"Epsilon for evaluation phase (default: {config.EPSILON_EVAL}).")
+
+    # Comprehensive Evaluation Arguments
+    parser.add_argument("--comprehensive-eval-interval", type=int, default=config.COMPREHENSIVE_EVAL_INTERVAL,
+                        help=f"Run comprehensive evaluation every N episodes (default: {config.COMPREHENSIVE_EVAL_INTERVAL}).")
+    parser.add_argument("--comprehensive-eval-min-phase", type=int, default=config.COMPREHENSIVE_EVAL_MIN_PHASE,
+                        help=f"Start comprehensive evaluation after phase N (default: {config.COMPREHENSIVE_EVAL_MIN_PHASE}).")
+    parser.add_argument("--use-comprehensive-for-best-model", action="store_true", 
+                        default=config.USE_COMPREHENSIVE_FOR_BEST_MODEL,
+                        help="Use comprehensive evaluation for best model selection (recommended).")
+    parser.add_argument("--no-comprehensive-for-best-model", dest="use_comprehensive_for_best_model", 
+                        action="store_false",
+                        help="Use single-phase evaluation for best model selection (legacy mode).")
 
     # --- Pygame Display (CARLA Environment) ---
     pg_group = parser.add_argument_group('Pygame Display')
