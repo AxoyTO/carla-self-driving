@@ -59,7 +59,8 @@ def initialize_training_components(args: Any, config: Any, numeric_log_level: in
             pygame_window_height=args.pygame_height,
             save_sensor_data=args.save_sensor_data,
             sensor_save_base_path=args.sensor_data_save_path,
-            sensor_save_interval=args.sensor_save_interval
+            sensor_save_interval=args.sensor_save_interval,
+            start_from_phase=getattr(args, 'start_from_phase', None)
         )
         logger.info("CARLA environment initialized successfully.")
     except Exception as e:
