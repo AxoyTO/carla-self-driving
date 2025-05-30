@@ -3,9 +3,139 @@ import numpy as np
 import math
 import logging
 from typing import Tuple, Dict, List, Optional, Any
+from functools import lru_cache
 import config # Import the config module
 
+# Performance optimization imports
+try:
+    import numba
+    from numba import jit, types
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+    logging.warning("Numba not available. Install numba for reward calculation JIT optimizations.")
+
 logger = logging.getLogger(__name__)
+
+# Numba JIT optimized functions for mathematical computations
+if NUMBA_AVAILABLE:
+    @jit(nopython=True, cache=True)
+    def _calculate_distance_numba(x1: float, y1: float, z1: float, x2: float, y2: float, z2: float) -> float:
+        """Optimized 3D distance calculation using Numba JIT."""
+        dx = x2 - x1
+        dy = y2 - y1
+        dz = z2 - z1
+        return math.sqrt(dx*dx + dy*dy + dz*dz)
+
+    @jit(nopython=True, cache=True)
+    def _calculate_2d_distance_numba(x1: float, y1: float, x2: float, y2: float) -> float:
+        """Optimized 2D distance calculation using Numba JIT."""
+        dx = x2 - x1
+        dy = y2 - y1
+        return math.sqrt(dx*dx + dy*dy)
+
+    @jit(nopython=True, cache=True)
+    def _calculate_gaussian_reward_numba(value: float, target: float, std_dev: float, scale: float) -> float:
+        """Optimized Gaussian reward calculation using Numba JIT."""
+        diff = value - target
+        exponent = -0.5 * (diff / std_dev) * (diff / std_dev)
+        return scale * math.exp(exponent)
+
+    @jit(nopython=True, cache=True)
+    def _calculate_speed_reward_numba(current_speed: float, target_speed: float, std_dev: float, 
+                                     scale: float, is_above_target: bool) -> float:
+        """Optimized speed reward calculation with asymmetric penalties using Numba JIT."""
+        speed_diff = current_speed - target_speed
+        
+        if speed_diff >= 0:  # Above target speed
+            # More lenient for slightly above target, harsh for excessive speed
+            speed_rew = scale * math.exp(-0.5 * (speed_diff / std_dev) * (speed_diff / std_dev))
+            if speed_diff > 2 * std_dev:
+                # Exponential penalty for dangerous speeding
+                excess_speed = speed_diff - 2 * std_dev
+                speed_rew -= 0.2 * (excess_speed / 10.0) * (excess_speed / 10.0)
+            return speed_rew
+        else:  # Below target speed
+            # More forgiving for being below target
+            abs_diff = abs(speed_diff)
+            return scale * math.exp(-0.3 * (abs_diff / std_dev) * (abs_diff / std_dev))
+
+    @jit(nopython=True, cache=True)
+    def _calculate_lane_centering_reward_numba(lateral_distance: float, lane_width: float, 
+                                              reward_factor: float) -> float:
+        """Optimized lane centering reward calculation using Numba JIT."""
+        max_dev = lane_width / 1.8
+        normalized_dist = min(lateral_distance / max_dev, 1.0)
+        return reward_factor * (1.0 - normalized_dist * normalized_dist)
+
+    @jit(nopython=True, cache=True)
+    def _calculate_orientation_penalty_numba(angle_degrees: float, threshold: float, 
+                                            penalty_factor: float) -> float:
+        """Optimized orientation penalty calculation using Numba JIT."""
+        if angle_degrees > threshold:
+            return -penalty_factor * (angle_degrees / 90.0)
+        return 0.0
+
+    @jit(nopython=True, cache=True)
+    def _calculate_dot_product_2d_numba(v1x: float, v1y: float, v2x: float, v2y: float) -> float:
+        """Optimized 2D dot product calculation using Numba JIT."""
+        return v1x * v2x + v1y * v2y
+
+    @jit(nopython=True, cache=True)
+    def _calculate_vector_magnitude_2d_numba(x: float, y: float) -> float:
+        """Optimized 2D vector magnitude calculation using Numba JIT."""
+        return math.sqrt(x*x + y*y)
+
+    @jit(nopython=True, cache=True)
+    def _calculate_smoothness_score_numba(throttle_change: float, brake_change: float, 
+                                         steer_change: float, weight_steer: float) -> float:
+        """Optimized smoothness score calculation using Numba JIT."""
+        return max(0.0, 1.0 - (throttle_change + brake_change + steer_change * weight_steer))
+
+else:
+    # Fallback functions when numba is not available
+    def _calculate_distance_numba(x1, y1, z1, x2, y2, z2):
+        dx, dy, dz = x2 - x1, y2 - y1, z2 - z1
+        return math.sqrt(dx*dx + dy*dy + dz*dz)
+
+    def _calculate_2d_distance_numba(x1, y1, x2, y2):
+        dx, dy = x2 - x1, y2 - y1
+        return math.sqrt(dx*dx + dy*dy)
+
+    def _calculate_gaussian_reward_numba(value, target, std_dev, scale):
+        diff = value - target
+        return scale * math.exp(-0.5 * (diff / std_dev)**2)
+
+    def _calculate_speed_reward_numba(current_speed, target_speed, std_dev, scale, is_above_target):
+        speed_diff = current_speed - target_speed
+        if speed_diff >= 0:
+            speed_rew = scale * math.exp(-0.5 * (speed_diff / std_dev)**2)
+            if speed_diff > 2 * std_dev:
+                excess_speed = speed_diff - 2 * std_dev
+                speed_rew -= 0.2 * (excess_speed / 10.0)**2
+            return speed_rew
+        else:
+            abs_diff = abs(speed_diff)
+            return scale * math.exp(-0.3 * (abs_diff / std_dev)**2)
+
+    def _calculate_lane_centering_reward_numba(lateral_distance, lane_width, reward_factor):
+        max_dev = lane_width / 1.8
+        normalized_dist = min(lateral_distance / max_dev, 1.0)
+        return reward_factor * (1.0 - normalized_dist**2)
+
+    def _calculate_orientation_penalty_numba(angle_degrees, threshold, penalty_factor):
+        if angle_degrees > threshold:
+            return -penalty_factor * (angle_degrees / 90.0)
+        return 0.0
+
+    def _calculate_dot_product_2d_numba(v1x, v1y, v2x, v2y):
+        return v1x * v2x + v1y * v2y
+
+    def _calculate_vector_magnitude_2d_numba(x, y):
+        return math.sqrt(x*x + y*y)
+
+    def _calculate_smoothness_score_numba(throttle_change, brake_change, steer_change, weight_steer):
+        return max(0.0, 1.0 - (throttle_change + brake_change + steer_change * weight_steer))
 
 class RewardCalculator:
     def __init__(self, reward_configs: Optional[Dict] = None, 
@@ -13,7 +143,7 @@ class RewardCalculator:
                  curriculum_phases: Optional[List[Dict]] = None, 
                  carla_env_ref = None):
         """
-        Initializes the RewardCalculator.
+        Initializes the RewardCalculator with performance optimizations.
         Args:
             reward_configs (Optional[Dict]): Dictionary to override specific reward values for phases.
             target_speed_kmh (Optional[float]): Target speed for the agent. Overrides config default.
@@ -24,6 +154,18 @@ class RewardCalculator:
         self.target_speed_kmh = target_speed_kmh if target_speed_kmh is not None else config.REWARD_CALC_TARGET_SPEED_KMH_DEFAULT
         self.curriculum_phases = curriculum_phases if curriculum_phases is not None else []
         self.carla_env_ref = carla_env_ref
+
+        # Performance optimization caches
+        self._location_cache = {}
+        self._cache_max_size = 100
+        self._computation_cache = {}
+        
+        # Previous values for smoothness calculation (performance tracking)
+        self._prev_throttle = 0.0
+        self._prev_brake = 0.0
+        self._prev_steer = 0.0
+        self._smoothness_history = []
+        self._max_history_size = 10
 
         # --- Load Reward Constants from config.py ---
         self.PENALTY_COLLISION = config.REWARD_CALC_PENALTY_COLLISION
@@ -58,6 +200,13 @@ class RewardCalculator:
         self.PENALTY_EXCESSIVE_STEER_BASE = config.REWARD_CALC_PENALTY_EXCESSIVE_STEER_BASE
         self.STEER_THRESHOLD_STRAIGHT = config.REWARD_CALC_STEER_THRESHOLD_STRAIGHT
         self.MIN_SPEED_FOR_STEER_PENALTY_KMH = config.REWARD_CALC_MIN_SPEED_FOR_STEER_PENALTY_KMH
+
+        # Load distance-based penalty parameters for max steps reached
+        self.MAX_STEPS_DISTANCE_PENALTY_ENABLED = config.MAX_STEPS_DISTANCE_PENALTY_ENABLED
+        self.MAX_STEPS_DISTANCE_PENALTY_MAX = config.MAX_STEPS_DISTANCE_PENALTY_MAX
+        self.MAX_STEPS_DISTANCE_PENALTY_MIN = config.MAX_STEPS_DISTANCE_PENALTY_MIN
+        self.MAX_STEPS_DISTANCE_PENALTY_MAX_DISTANCE = config.MAX_STEPS_DISTANCE_PENALTY_MAX_DISTANCE
+        self.MAX_STEPS_DISTANCE_PENALTY_CLOSE_MULTIPLIER = config.MAX_STEPS_DISTANCE_PENALTY_CLOSE_MULTIPLIER
 
         # Phase 0 specific adjustments (can be overridden by curriculum config or reward_configs dict)
         # These are defaults if not specified in curriculum phase reward_configs
@@ -96,23 +245,50 @@ class RewardCalculator:
             'is_lane_change': False
         }
 
+    @lru_cache(maxsize=128)
+    def _cached_distance_calculation(self, x1: float, y1: float, z1: float, x2: float, y2: float, z2: float) -> float:
+        """Cached distance calculation for frequently computed distances."""
+        return _calculate_distance_numba(x1, y1, z1, x2, y2, z2)
+
+    def _clear_caches_if_full(self):
+        """Clear caches if they exceed maximum size to prevent memory issues."""
+        if len(self._location_cache) > self._cache_max_size:
+            # Keep only the most recent half of entries
+            keep_size = self._cache_max_size // 2
+            items = list(self._location_cache.items())
+            self._location_cache = dict(items[-keep_size:])
+        
+        if len(self._computation_cache) > self._cache_max_size:
+            keep_size = self._cache_max_size // 2
+            items = list(self._computation_cache.items())
+            self._computation_cache = dict(items[-keep_size:])
+
     def _calculate_distance_goal_reward(self, current_location, previous_location, target_waypoint, reward_type, current_speed_mps, require_stop) -> float:
+        """Optimized distance-to-goal reward calculation with caching."""
         reward = 0.0
         if not target_waypoint or not previous_location or not target_waypoint.transform:
             return reward
 
-        dist_to_target = current_location.distance(target_waypoint.transform.location)
-        prev_dist_to_target = previous_location.distance(target_waypoint.transform.location)
+        # Use optimized distance calculations
+        target_loc = target_waypoint.transform.location
+        dist_to_target = _calculate_distance_numba(
+            current_location.x, current_location.y, current_location.z,
+            target_loc.x, target_loc.y, target_loc.z
+        )
+        prev_dist_to_target = _calculate_distance_numba(
+            previous_location.x, previous_location.y, previous_location.z,
+            target_loc.x, target_loc.y, target_loc.z
+        )
+        
         dist_reduction = prev_dist_to_target - dist_to_target
-
         stop_ok = (not require_stop) or (current_speed_mps <= config.STOP_AT_GOAL_SPEED_THRESHOLD)
 
         if reward_type == "phase0":
-            if dist_reduction > 0.01: # More sensitive for phase0
+            if dist_reduction > 0.01:
                 distance_component = dist_reduction * self.REWARD_DISTANCE_FACTOR * self.phase0_distance_factor_multiplier
                 reward += distance_component
-            elif dist_reduction < -0.1: # Penalize moving away more strongly in phase0
-                distance_penalty = abs(dist_reduction) * self.REWARD_DISTANCE_FACTOR * 0.5 # Standard factor for moving away
+            elif dist_reduction < -0.1:
+                distance_penalty = abs(dist_reduction) * self.REWARD_DISTANCE_FACTOR * 0.5
                 reward -= distance_penalty
             if dist_to_target < self.WAYPOINT_REACHED_THRESHOLD and stop_ok:
                 goal_reward = self.REWARD_GOAL_REACHED * self.phase0_goal_reward_multiplier
@@ -126,22 +302,111 @@ class RewardCalculator:
         return reward
 
     def _calculate_speed_reward(self, vehicle, current_speed_kmh, is_reversing_action) -> float:
+        """Enhanced speed reward with performance optimizations and better shaping."""
         reward = 0.0
-        speed_diff = current_speed_kmh - self.target_speed_kmh
-        speed_rew = self.TARGET_SPEED_REWARD_FACTOR * math.exp(-0.5 * (speed_diff / self.TARGET_SPEED_STD_DEV_KMH)**2)
+        control = vehicle.get_control()
         
-        # Apply speed reward if not braking hard while slow, and not reversing (unless reversing is intended)
-        if not (vehicle.get_control().brake > 0.5 and current_speed_kmh < 5) and not is_reversing_action:
+        # Context-aware target speed adjustment (cached)
+        context_adjusted_target = self._get_context_adjusted_target_speed(vehicle, current_speed_kmh)
+        
+        # Use optimized speed reward calculation
+        speed_diff = current_speed_kmh - context_adjusted_target
+        is_above_target = speed_diff >= 0
+        
+        speed_rew = _calculate_speed_reward_numba(
+            current_speed_kmh, context_adjusted_target, 
+            self.TARGET_SPEED_STD_DEV_KMH, self.TARGET_SPEED_REWARD_FACTOR, 
+            is_above_target
+        )
+        
+        # Apply speed reward with context considerations
+        if not (control.brake > 0.5 and current_speed_kmh < 5) and not is_reversing_action:
             reward += speed_rew
         
-        # Penalize for excessive speeding
-        if current_speed_kmh > self.target_speed_kmh + 2 * self.TARGET_SPEED_STD_DEV_KMH:
-            reward -= (current_speed_kmh - (self.target_speed_kmh + 2 * self.TARGET_SPEED_STD_DEV_KMH)) * 0.1
+        # Smooth acceleration/deceleration bonus (optimized)
+        reward += self._calculate_smoothness_bonus_optimized(vehicle, current_speed_kmh)
+        
+        # Energy efficiency bonus (reward for coasting when appropriate)
+        if 0.1 < control.throttle < 0.3 and abs(speed_diff) < 5:
+            reward += 0.1  # Small bonus for efficient driving
+        
         return reward
 
+    @lru_cache(maxsize=64)
+    def _get_context_adjusted_target_speed(self, vehicle, current_speed_kmh) -> float:
+        """Cached context-aware target speed adjustment."""
+        base_target = self.target_speed_kmh
+        
+        # Get environment reference for context
+        env = self.carla_env_ref() if self.carla_env_ref else None
+        if not env:
+            return base_target
+        
+        # Reduce target speed near intersections or traffic lights
+        if hasattr(env, 'world') and env.world:
+            vehicle_location = vehicle.get_location()
+            
+            # Check for nearby traffic lights (optimized distance check)
+            traffic_lights = env.world.get_actors().filter('traffic.traffic_light')
+            for tl in traffic_lights:
+                tl_loc = tl.get_location()
+                distance = _calculate_2d_distance_numba(
+                    vehicle_location.x, vehicle_location.y,
+                    tl_loc.x, tl_loc.y
+                )
+                if distance < 30:
+                    if tl.state == carla.TrafficLightState.Red:
+                        base_target *= 0.3  # Slow down for red lights
+                    elif tl.state == carla.TrafficLightState.Yellow:
+                        base_target *= 0.6  # Moderate slowdown for yellow
+        
+        # Reduce target speed in curves (based on steering input)
+        steering_magnitude = abs(vehicle.get_control().steer)
+        if steering_magnitude > 0.3:
+            curve_factor = max(0.5, 1.0 - steering_magnitude * 0.5)
+            base_target *= curve_factor
+        
+        return base_target
+
+    def _calculate_smoothness_bonus_optimized(self, vehicle, current_speed_kmh) -> float:
+        """Optimized smoothness bonus calculation with history tracking."""
+        control = vehicle.get_control()
+        
+        # Calculate control input changes
+        throttle_change = abs(control.throttle - self._prev_throttle)
+        brake_change = abs(control.brake - self._prev_brake)
+        steer_change = abs(control.steer - self._prev_steer)
+        
+        # Use optimized smoothness calculation
+        smoothness_score = _calculate_smoothness_score_numba(
+            throttle_change, brake_change, steer_change, 2.0  # Steering weighted more
+        )
+        
+        # Update smoothness history for trend analysis
+        self._smoothness_history.append(smoothness_score)
+        if len(self._smoothness_history) > self._max_history_size:
+            self._smoothness_history.pop(0)
+        
+        # Update previous values
+        self._prev_throttle = control.throttle
+        self._prev_brake = control.brake
+        self._prev_steer = control.steer
+        
+        # Calculate bonus with trend consideration
+        smoothness_bonus = smoothness_score * 0.05
+        
+        # Additional bonus for consistent smoothness
+        if len(self._smoothness_history) >= 3:
+            avg_smoothness = sum(self._smoothness_history) / len(self._smoothness_history)
+            if avg_smoothness > 0.8:
+                smoothness_bonus += 0.02  # Extra bonus for sustained smooth driving
+        
+        return max(0, smoothness_bonus)
+
     def _calculate_lane_keeping_rewards_penalties(self, vehicle, current_location, carla_map, lane_invasion_event) -> Tuple[float, bool]:
+        """Optimized lane keeping calculation with performance improvements."""
         reward = 0.0
-        on_sidewalk_flag = False # This will be the definitive flag for sidewalk incursion for this step
+        on_sidewalk_flag = False
 
         if not carla_map:
             return reward, on_sidewalk_flag
@@ -150,51 +415,62 @@ class RewardCalculator:
         if lane_invasion_event:
             for marking in lane_invasion_event.crossed_lane_markings:
                 if marking.type == carla.LaneMarkingType.Curb:
-                    reward += self.PENALTY_SIDEWALK  # Apply the strong sidewalk penalty
+                    reward += self.PENALTY_SIDEWALK
                     on_sidewalk_flag = True
-                    break # Curb crossing is definitive for sidewalk penalty this step
-        
+                    break
+
         # 2. If no curb was hit, check for direct sidewalk lane type
-        if not on_sidewalk_flag: # Only if a curb wasn't already processed
+        if not on_sidewalk_flag:
             current_waypoint_at_location = carla_map.get_waypoint(current_location, project_to_road=False) 
             if current_waypoint_at_location and current_waypoint_at_location.lane_type == carla.LaneType.Sidewalk:
-                reward += self.PENALTY_SIDEWALK # Apply penalty
-                on_sidewalk_flag = True      # Set flag
+                reward += self.PENALTY_SIDEWALK
+                on_sidewalk_flag = True
 
         # 3. If still not flagged for sidewalk, proceed with general off-road and lane keeping
         if not on_sidewalk_flag:
             projected_driving_wp = carla_map.get_waypoint(current_location, project_to_road=True, lane_type=carla.LaneType.Driving)
             if projected_driving_wp and projected_driving_wp.transform:
                 if projected_driving_wp.lane_type != carla.LaneType.Driving: 
-                    reward += self.PENALTY_OFFROAD # General offroad if not on sidewalk
-                else: # On a driving lane (by projection)
-                    # Lane Centering
-                    max_dev = projected_driving_wp.lane_width / 1.8 
-                    lat_dist = current_location.distance(projected_driving_wp.transform.location) 
-                    reward += self.LANE_CENTERING_REWARD_FACTOR * (1.0 - min(lat_dist / max_dev, 1.0)**2)
+                    reward += self.PENALTY_OFFROAD
+                else:
+                    # Optimized Lane Centering calculation
+                    proj_loc = projected_driving_wp.transform.location
+                    lateral_distance = _calculate_distance_numba(
+                        current_location.x, current_location.y, current_location.z,
+                        proj_loc.x, proj_loc.y, proj_loc.z
+                    )
+                    
+                    lane_centering_reward = _calculate_lane_centering_reward_numba(
+                        lateral_distance, projected_driving_wp.lane_width, 
+                        self.LANE_CENTERING_REWARD_FACTOR
+                    )
+                    reward += lane_centering_reward
 
-                    # Lane Orientation
+                    # Optimized Lane Orientation calculation
                     v_fwd = vehicle.get_transform().get_forward_vector()
                     l_fwd = projected_driving_wp.transform.get_forward_vector()
-                    v_fwd_2d = np.array([v_fwd.x, v_fwd.y])
-                    l_fwd_2d = np.array([l_fwd.x, l_fwd.y])
-                    norm_v = np.linalg.norm(v_fwd_2d)
-                    norm_l = np.linalg.norm(l_fwd_2d)
-                    if norm_v > 1e-4 and norm_l > 1e-4:
-                        dot_product = np.dot(v_fwd_2d, l_fwd_2d) / (norm_v * norm_l)
-                        angle_d = math.degrees(math.acos(np.clip(dot_product, -1.0, 1.0)))
-                        if angle_d > 20.0:
-                            reward -= self.LANE_ORIENTATION_PENALTY_FACTOR * (angle_d / 90.0)
                     
-                    # Solid Lane Crossing (only if on driving lane and not already a sidewalk event)
-                    if lane_invasion_event: # Re-check for other markings if on driving lane
+                    # Use optimized vector operations
+                    v_norm = _calculate_vector_magnitude_2d_numba(v_fwd.x, v_fwd.y)
+                    l_norm = _calculate_vector_magnitude_2d_numba(l_fwd.x, l_fwd.y)
+                    
+                    if v_norm > 1e-4 and l_norm > 1e-4:
+                        dot_product = _calculate_dot_product_2d_numba(v_fwd.x, v_fwd.y, l_fwd.x, l_fwd.y)
+                        dot_product_normalized = dot_product / (v_norm * l_norm)
+                        dot_product_clamped = max(-1.0, min(1.0, dot_product_normalized))
+                        angle_d = math.degrees(math.acos(dot_product_clamped))
+                        
+                        orientation_penalty = _calculate_orientation_penalty_numba(
+                            angle_d, 20.0, self.LANE_ORIENTATION_PENALTY_FACTOR
+                        )
+                        reward += orientation_penalty
+                    
+                    # Solid Lane Crossing check
+                    if lane_invasion_event:
                         for marking in lane_invasion_event.crossed_lane_markings:
-                            # Check for solid lines, but ensure not to process .Curb again here if it was missed above
-                            # (though it shouldn't be if the first block for curb detection ran)
                             if marking.type in [carla.LaneMarkingType.Solid, carla.LaneMarkingType.SolidSolid]:
                                 reward += self.PENALTY_SOLID_LANE_CROSS
-                                # Don't break, could be multiple solid lines or other non-curb events.
-            else: # Cannot project to a driving lane (very off-road) AND not on sidewalk
+            else:
                 reward += self.PENALTY_OFFROAD 
         
         return reward, on_sidewalk_flag
@@ -381,7 +657,7 @@ class RewardCalculator:
                     if angle_d > 20.0:
                         reward -= self.LANE_ORIENTATION_PENALTY_FACTOR * (angle_d / 90.0)
                 
-                # Solid Lane Crossing (only if on driving lane)
+                # Solid Lane Crossing (only if on driving lane and not already a sidewalk event)
                 if lane_invasion_event: # Re-check for other markings if on driving lane
                     for marking in lane_invasion_event.crossed_lane_markings:
                         # Check for solid lines, but skip curbs since they're handled in sidewalk detection
@@ -451,16 +727,81 @@ class RewardCalculator:
         return reward
 
     def _calculate_traffic_light_reward(self, vehicle, relevant_traffic_light_state, current_speed_mps) -> float:
+        """Enhanced traffic light reward with anticipatory behavior and smooth transitions."""
         reward = 0.0
-        if relevant_traffic_light_state and vehicle.is_at_traffic_light():
-            if relevant_traffic_light_state == carla.TrafficLightState.Red:
+        
+        if not relevant_traffic_light_state:
+            return reward
+            
+        # Get environment reference for enhanced context
+        env = self.carla_env_ref() if self.carla_env_ref else None
+        vehicle_location = vehicle.get_location()
+        
+        # Enhanced traffic light behavior
+        if relevant_traffic_light_state == carla.TrafficLightState.Red:
+            if vehicle.is_at_traffic_light():
                 if current_speed_mps > self.VEHICLE_STOPPED_SPEED_THRESHOLD:
-                    reward += self.PENALTY_TRAFFIC_LIGHT_RED_MOVING
+                    # Graduated penalty based on speed when running red light
+                    speed_factor = min(current_speed_mps / 5.0, 2.0)  # Cap at 2x penalty
+                    reward += self.PENALTY_TRAFFIC_LIGHT_RED_MOVING * speed_factor
                 else:
+                    # Bonus for proper stopping
                     reward += self.REWARD_TRAFFIC_LIGHT_STOPPED_AT_RED
-            elif relevant_traffic_light_state == carla.TrafficLightState.Green:
-                if current_speed_mps > self.MIN_FORWARD_SPEED_THRESHOLD: # Encourage going on green
+                    
+                    # Additional bonus for stopping smoothly (not abruptly)
+                    if hasattr(self, '_prev_speed_mps') and self._prev_speed_mps > 2.0:
+                        deceleration = self._prev_speed_mps - current_speed_mps
+                        if 0.5 < deceleration < 3.0:  # Smooth deceleration range
+                            reward += 5.0  # Bonus for smooth stopping
+            else:
+                # Anticipatory behavior: reward for slowing down when approaching red light
+                if env and hasattr(env, 'world'):
+                    traffic_lights = env.world.get_actors().filter('traffic.traffic_light')
+                    for tl in traffic_lights:
+                        distance = tl.get_location().distance(vehicle_location)
+                        if 10 < distance < 50 and tl.state == carla.TrafficLightState.Red:
+                            # Reward for anticipatory slowing
+                            if current_speed_mps < self.target_speed_kmh / 3.6 * 0.7:
+                                anticipation_bonus = (50 - distance) / 50 * 3.0
+                                reward += anticipation_bonus
+                                
+        elif relevant_traffic_light_state == carla.TrafficLightState.Yellow:
+            # Enhanced yellow light behavior
+            if env and hasattr(env, 'world'):
+                traffic_lights = env.world.get_actors().filter('traffic.traffic_light')
+                for tl in traffic_lights:
+                    distance = tl.get_location().distance(vehicle_location)
+                    if distance < 30 and tl.state == carla.TrafficLightState.Yellow:
+                        # Decision-making reward based on distance and speed
+                        stopping_distance = (current_speed_mps ** 2) / (2 * 4.0)  # Assume 4 m/s² deceleration
+                        
+                        if distance > stopping_distance + 5:  # Safe to proceed
+                            if current_speed_mps > self.MIN_FORWARD_SPEED_THRESHOLD:
+                                reward += 3.0  # Reward for proceeding when safe
+                        else:  # Should stop
+                            if current_speed_mps < self.VEHICLE_STOPPED_SPEED_THRESHOLD:
+                                reward += 8.0  # Reward for stopping at yellow when appropriate
+                            elif current_speed_mps < self.target_speed_kmh / 3.6 * 0.5:
+                                reward += 2.0  # Partial reward for slowing down
+                                
+        elif relevant_traffic_light_state == carla.TrafficLightState.Green:
+            if vehicle.is_at_traffic_light():
+                if current_speed_mps > self.MIN_FORWARD_SPEED_THRESHOLD:
+                    # Base reward for proceeding on green
                     reward += self.REWARD_TRAFFIC_LIGHT_GREEN_PROCEED
+                    
+                    # Bonus for appropriate acceleration from stop
+                    if hasattr(self, '_prev_speed_mps') and self._prev_speed_mps < 1.0:
+                        acceleration = current_speed_mps - self._prev_speed_mps
+                        if 0.5 < acceleration < 2.0:  # Smooth acceleration
+                            reward += 3.0
+                else:
+                    # Small penalty for hesitating at green light
+                    reward -= 1.0
+        
+        # Store speed for next calculation
+        self._prev_speed_mps = current_speed_mps
+        
         return reward
 
     def _calculate_proximity_penalty(self, vehicle, current_location, world) -> Tuple[float, bool]:
@@ -683,7 +1024,7 @@ class RewardCalculator:
         spawn_config = current_phase_config.get('spawn_config', '').lower()
         
         # Determine phase type based on phase name and spawn config
-        if ('straight' in phase_name or 'phase0' in phase_name or 
+        if ('straight' in phase_name or 'phase1' in phase_name or 'phase2' in phase_name or 'phase3' in phase_name or
             spawn_config == 'fixed_straight' or 'basic' in phase_name):
             return 'straight', self.sidewalk_detection_straight
         elif ('turn' in phase_name or 'steer' in phase_name or 
@@ -750,3 +1091,54 @@ class RewardCalculator:
             return True, "default_crossable_marking_allowance"
             
         return False, "no_crossable_markings_found" 
+
+    def calculate_max_steps_distance_penalty(self, current_location: carla.Location, 
+                                            target_waypoint, distance_to_final_goal: Optional[float] = None) -> float:
+        """
+        Calculate distance-based penalty when max steps are reached without success.
+        
+        Args:
+            current_location: Current vehicle location
+            target_waypoint: Target waypoint
+            distance_to_final_goal: Distance to final goal (preferred if available)
+            
+        Returns:
+            float: Distance-based penalty (always negative), or 0 if disabled
+        """
+        if not self.MAX_STEPS_DISTANCE_PENALTY_ENABLED:
+            return 0.0
+            
+        if not current_location:
+            return self.MAX_STEPS_DISTANCE_PENALTY_MAX
+            
+        # Use distance_to_final_goal if available, otherwise calculate from target_waypoint
+        if distance_to_final_goal is not None:
+            distance_to_goal = distance_to_final_goal
+        elif target_waypoint and target_waypoint.transform:
+            target_loc = target_waypoint.transform.location
+            distance_to_goal = current_location.distance(target_loc)
+        else:
+            # No goal information available, apply maximum penalty
+            return self.MAX_STEPS_DISTANCE_PENALTY_MAX
+            
+        # Calculate penalty based on distance - closer to goal gets smaller penalty
+        close_distance_threshold = self.WAYPOINT_REACHED_THRESHOLD * self.MAX_STEPS_DISTANCE_PENALTY_CLOSE_MULTIPLIER
+        
+        if distance_to_goal <= self.WAYPOINT_REACHED_THRESHOLD:
+            # Very close to goal - minimal penalty (agent almost made it)
+            penalty = self.MAX_STEPS_DISTANCE_PENALTY_MIN * 0.5
+        elif distance_to_goal <= close_distance_threshold:
+            # Close to goal - small penalty
+            penalty = self.MAX_STEPS_DISTANCE_PENALTY_MIN
+        elif distance_to_goal >= self.MAX_STEPS_DISTANCE_PENALTY_MAX_DISTANCE:
+            # Very far from goal - maximum penalty
+            penalty = self.MAX_STEPS_DISTANCE_PENALTY_MAX
+        else:
+            # Linear interpolation between min and max penalty based on distance
+            distance_ratio = (distance_to_goal - close_distance_threshold) / \
+                           (self.MAX_STEPS_DISTANCE_PENALTY_MAX_DISTANCE - close_distance_threshold)
+            distance_ratio = min(1.0, max(0.0, distance_ratio))  # Clamp to [0, 1]
+            penalty = self.MAX_STEPS_DISTANCE_PENALTY_MIN + (self.MAX_STEPS_DISTANCE_PENALTY_MAX - self.MAX_STEPS_DISTANCE_PENALTY_MIN) * distance_ratio
+            
+        logger.debug(f"Max steps penalty: {penalty:.2f} for distance {distance_to_goal:.2f}m to goal")
+        return penalty 
