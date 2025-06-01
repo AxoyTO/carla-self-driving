@@ -21,7 +21,7 @@ from app.replay_buffers.prioritized_replay_buffer import PrioritizedReplayBuffer
 from app.replay_buffers.n_step_replay_buffer import NStepReplayBuffer
 
 # Typing
-from typing import Tuple, Dict, Any # For type hints
+from typing import Tuple, Dict, Any
 
 # Forward declaration for type hinting config module if needed, or just pass as 'Any'
 # ConfigType = Any 
@@ -73,7 +73,7 @@ def initialize_training_components(args: Any, config: Any, numeric_log_level: in
     use_per = getattr(args, 'use_prioritized_replay', False)
     use_n_step = getattr(args, 'use_n_step_replay', False)
     n_step_value = getattr(args, 'n_step_value', 3)
-    agent_gamma = getattr(args, 'gamma', 0.99) # Get gamma from agent args for NStepBuffer
+    agent_gamma = getattr(args, 'gamma', 0.99)
 
     if use_n_step:
         replay_buffer = NStepReplayBuffer(
