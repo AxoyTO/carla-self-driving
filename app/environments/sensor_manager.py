@@ -1,10 +1,11 @@
 import carla
 import weakref
 import logging
-from typing import Optional, Tuple, List, Dict, Any
 import numpy as np
+import time
+from typing import Optional, Tuple, List, Dict, Any, Union
 from gymnasium import spaces # Assuming gymnasium is used, adjust if it's gym
-from collections import OrderedDict # Import OrderedDict
+from collections import OrderedDict
 
 # Assuming these handlers are in the same directory or accessible via PYTHONPATH
 from .sensors import camera_handler
