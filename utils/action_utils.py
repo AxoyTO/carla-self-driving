@@ -249,4 +249,75 @@ def validate_action_configuration() -> bool:
         
     except Exception as e:
         logger.error(f"Action configuration validation failed: {e}")
-        return False 
+        return False
+
+def apply_action_to_vehicle(vehicle: carla.Actor, action_index: int, action_map: Dict[int, Dict[str, Any]], logger: Optional[logging.Logger] = None) -> carla.VehicleControl:
+    """
+    Applies a discrete action to a CARLA vehicle and returns the resulting VehicleControl.
+    
+    Args:
+        vehicle: The CARLA vehicle actor to control
+        action_index: The discrete action index to apply
+        action_map: Mapping of action indices to action definitions
+        logger: Optional logger for debugging
+    
+    Returns:
+        carla.VehicleControl: The control object applied to the vehicle
+    
+    Raises:
+        ValueError: If action_index is invalid or action_map is malformed
+    """
+    if not action_map:
+        raise ValueError("Action map cannot be empty")
+    
+    if action_index not in action_map:
+        if logger:
+            logger.warning(f"Invalid action index {action_index}. Using default action (index 0).")
+        action_index = 0 if 0 in action_map else list(action_map.keys())[0]
+    
+    action_def = action_map[action_index]
+    
+    if not isinstance(action_def, dict):
+        raise ValueError(f"Action definition for index {action_index} must be a dictionary")
+    
+    try:
+        control = create_vehicle_control_from_action(action_def)
+        vehicle.apply_control(control)
+        
+        if logger:
+            logger.debug(f"Applied action {action_index}: {action_def}")
+        
+        return control
+        
+    except Exception as e:
+        if logger:
+            logger.error(f"Failed to apply action {action_index}: {e}")
+        raise
+
+def create_vehicle_control_from_action(action_def: Dict[str, Any]) -> carla.VehicleControl:
+    """
+    Creates a CARLA VehicleControl object from an action definition dictionary.
+    
+    Args:
+        action_def: Dictionary containing control values (throttle, steer, brake, etc.)
+    
+    Returns:
+        carla.VehicleControl: The control object
+    
+    Raises:
+        ValueError: If action_def is invalid or contains invalid values
+    """
+    if not isinstance(action_def, dict):
+        raise ValueError("Action definition must be a dictionary")
+    
+    control = carla.VehicleControl()
+    
+    control.throttle = _validate_control_value(action_def.get('throttle', 0.0), 'throttle')
+    control.steer = _validate_control_value(action_def.get('steer', 0.0), 'steer', -1.0, 1.0)
+    control.brake = _validate_control_value(action_def.get('brake', 0.0), 'brake')
+    control.hand_brake = bool(action_def.get('hand_brake', False))
+    control.reverse = bool(action_def.get('reverse', False))
+    control.manual_gear_shift = bool(action_def.get('manual_gear_shift', False))
+    control.gear = int(action_def.get('gear', 0))
+    
+    return control 
