@@ -40,26 +40,22 @@ class OptimizationMode(Enum):
 @dataclass
 class AgentConfig:
     """DQN Agent configuration."""
-    # Basic hyperparameters
     learning_rate: float = 0.0001
     gamma: float = 0.99
     epsilon_start: float = 1.0
     epsilon_end: float = 0.01
     epsilon_decay: float = 0.995
     
-    # Training parameters
     batch_size: int = 32
     memory_size: int = 10000
     target_update_freq: int = 1000
     tau: float = 0.005
     
-    # Enhanced features
     use_dueling: bool = False
     use_double_dqn: bool = True
     gradient_clip: float = 1.0
     use_prioritized_replay: bool = False
     
-    # Agent type
     agent_type: AgentType = AgentType.LIGHTWEIGHT_ENHANCED
     
     def validate(self):
@@ -77,27 +73,22 @@ class AgentConfig:
 @dataclass
 class EnvironmentConfig:
     """CARLA environment configuration."""
-    # CARLA connection
     carla_host: str = "localhost"
     carla_port: int = 2000
     town: str = "Town03"
     
-    # Simulation parameters
     timestep: float = 0.05
     time_scale: float = 1.0
     max_episode_steps: int = 1000
     
-    # Sensor configuration
     enable_sensors: List[str] = field(default_factory=lambda: ["rgb_camera", "gnss", "imu"])
     image_size: Tuple[int, int] = (84, 84)
     
-    # Visualization
     enable_pygame_display: bool = False
     pygame_width: int = 1280
     pygame_height: int = 720
     disable_sensor_views: bool = False
     
-    # Data saving
     save_sensor_data: bool = False
     sensor_data_save_path: str = "./data/sensor_data"
     sensor_save_interval: int = 100
@@ -115,22 +106,18 @@ class EnvironmentConfig:
 @dataclass
 class TrainingConfig:
     """Training loop configuration."""
-    # Episode parameters
     num_episodes: int = 1000
     max_steps_per_episode: int = 1000
     
-    # Evaluation
     eval_interval: int = 25
     num_eval_episodes: int = 5
     epsilon_eval: float = 0.0
     
-    # Saving and logging
     save_interval: int = 100
     save_dir: str = "./models"
     log_level: str = "INFO"
     load_model_from: Optional[str] = None
     
-    # Performance optimization
     optimization_mode: OptimizationMode = OptimizationMode.BALANCED
     enable_performance_monitoring: bool = True
     enable_observation_preprocessing: bool = True
@@ -175,7 +162,6 @@ class MonitoringConfig:
     metrics_window_size: int = 100
     log_dir: str = "./logs/monitoring"
     
-    # Real-time dashboard
     enable_dashboard: bool = False
     dashboard_port: int = 8080
     
@@ -190,19 +176,16 @@ class MonitoringConfig:
 @dataclass
 class ExperimentConfig:
     """Complete experiment configuration."""
-    # Core configurations
     agent: AgentConfig = field(default_factory=AgentConfig)
     environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     preprocessing: ObservationPreprocessingConfig = field(default_factory=ObservationPreprocessingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     
-    # Experiment metadata
     experiment_name: str = "carla_dqn_experiment"
     description: str = "CARLA DQN training experiment"
     tags: List[str] = field(default_factory=list)
     
-    # Device configuration
     device: DeviceType = DeviceType.AUTO
     
     def validate(self):
@@ -213,7 +196,6 @@ class ExperimentConfig:
         self.preprocessing.validate()
         self.monitoring.validate()
         
-        # Cross-component validations
         if self.training.optimization_mode == OptimizationMode.CONSERVATIVE:
             self._apply_conservative_settings()
         elif self.training.optimization_mode == OptimizationMode.AGGRESSIVE:
@@ -234,7 +216,7 @@ class ExperimentConfig:
         self.agent.use_dueling = True
         self.agent.use_double_dqn = True
         self.agent.learning_rate = min(self.agent.learning_rate * 1.5, 0.001)
-        self.preprocessing.enable_compression = False  # Use full resolution
+        self.preprocessing.enable_compression = False
 
 
 class ConfigManager:
@@ -249,7 +231,6 @@ class ConfigManager:
         with open(config_path, 'r') as f:
             config_dict = yaml.safe_load(f)
         
-        # Convert to configuration objects
         config = ConfigManager._dict_to_config(config_dict)
         config.validate()
         
@@ -348,7 +329,6 @@ class ConfigManager:
     @staticmethod
     def _dict_to_config(config_dict: Dict[str, Any]) -> ExperimentConfig:
         """Convert dictionary to configuration object."""
-        # Convert enums
         for section in ['agent', 'training']:
             if section in config_dict:
                 section_dict = config_dict[section]
@@ -360,14 +340,12 @@ class ConfigManager:
         if 'device' in config_dict:
             config_dict['device'] = DeviceType(config_dict['device'])
         
-        # Create configuration objects
         agent_config = AgentConfig(**config_dict.get('agent', {}))
         env_config = EnvironmentConfig(**config_dict.get('environment', {}))
         training_config = TrainingConfig(**config_dict.get('training', {}))
         preprocessing_config = ObservationPreprocessingConfig(**config_dict.get('preprocessing', {}))
         monitoring_config = MonitoringConfig(**config_dict.get('monitoring', {}))
         
-        # Create main config
         main_config = {k: v for k, v in config_dict.items() 
                       if k not in ['agent', 'environment', 'training', 'preprocessing', 'monitoring']}
         
@@ -387,7 +365,6 @@ class ConfigManager:
         
         config_dict = asdict(config)
         
-        # Convert enums to strings
         if 'agent' in config_dict and 'agent_type' in config_dict['agent']:
             config_dict['agent']['agent_type'] = config_dict['agent']['agent_type'].value
         
