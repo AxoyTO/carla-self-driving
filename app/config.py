@@ -3,26 +3,20 @@ import os
 import sys
 from typing import Dict, Any, Optional
 
-# Add project root to Python path for imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)  # Go up one level from app/
+project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from utils.config_loader import ConfigLoader
 
-# Initialize config loader with correct path to configs directory
-# The configs directory is at the project root level, not relative to app/
 config_dir = os.path.join(project_root, "configs")
 config_loader = ConfigLoader(config_dir)
 
-# Load main configuration
 _main_config = config_loader.load_config("config")
 
-# --- Dynamic/Computed Settings ---
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# --- Configuration Access Functions ---
 def get_config_value(key_path: str, default: Any = None) -> Any:
     """Get a configuration value using dot notation."""
     return config_loader._get_nested_value(_main_config, key_path, default)
@@ -55,23 +49,18 @@ def get_curriculum_config(key: str, default: Any = None) -> Any:
     """Get a curriculum configuration value."""
     return get_config_value(f"curriculum.{key}", default)
 
-# --- Exposed Configuration Values (for backward compatibility) ---
-# General Settings
 EXPERIMENT_NAME = get_general_config("experiment_name", "dqn_carla_agent")
 CARLA_ROOT = get_general_config("carla_root", "/opt/carla-simulator")
 
-# Argument Parser Default Values
 LOG_LEVEL = get_default_config("log_level", "INFO")
 ENABLE_PYGAME_DISPLAY = get_default_config("enable_pygame_display", False)
 PYGAME_WIDTH = get_default_config("pygame_width", 1920)
 PYGAME_HEIGHT = get_default_config("pygame_height", 1080)
 DISABLE_SENSOR_VIEWS = get_default_config("disable_sensor_views", False)
 
-# Fix the SAVE_DIR to use absolute path based on project root
 _save_dir_relative = get_default_config("save_dir", "./models/model_checkpoints")
 if _save_dir_relative.startswith('./'):
-    # Convert relative path to absolute path based on project root
-    SAVE_DIR = os.path.join(project_root, _save_dir_relative[2:])  # Remove './' prefix
+    SAVE_DIR = os.path.join(project_root, _save_dir_relative[2:])
 else:
     SAVE_DIR = _save_dir_relative
 
@@ -80,7 +69,6 @@ SAVE_INTERVAL = get_default_config("save_interval", 50)
 EVAL_INTERVAL = get_default_config("eval_interval", 25)
 NUM_EVAL_EPISODES = get_default_config("num_eval_episodes", 5)
 
-# Fix sensor data save path similarly
 _sensor_data_path_relative = get_default_config("sensor_data_save_path", "./data/sensor_capture")
 if _sensor_data_path_relative.startswith('./'):
     SENSOR_DATA_SAVE_PATH = os.path.join(project_root, _sensor_data_path_relative[2:])
@@ -96,7 +84,6 @@ EPSILON_END = get_default_config("epsilon_end", 0.01)
 EPSILON_DECAY = get_default_config("epsilon_decay", 0.995)
 EPSILON_EVAL = get_default_config("epsilon_eval", 0.01)
 
-# Environment Parameters
 ENV_HOST = get_environment_config("host", "localhost")
 ENV_PORT = get_environment_config("port", 2000)
 ENV_TOWN = get_environment_config("town", "Town03")
@@ -105,7 +92,6 @@ ENV_TIME_SCALE = get_environment_config("time_scale", 1.0)
 IMAGE_WIDTH = get_environment_config("image_width", 84)
 IMAGE_HEIGHT = get_environment_config("image_height", 84)
 
-# Agent Parameters
 LEARNING_RATE = get_agent_config("learning_rate", 1e-4)
 GAMMA = get_agent_config("gamma", 0.99)
 TAU = get_agent_config("tau", 1e-3)
@@ -130,24 +116,20 @@ USE_LSTM = get_agent_config("use_lstm", False)
 LSTM_HIDDEN_SIZE = get_agent_config("lstm_hidden_size", 512)
 LSTM_NUM_LAYERS = get_agent_config("lstm_num_layers", 1)
 
-# Model Architecture Parameters
 MODEL_HIDDEN_DIMS = get_agent_config("model_hidden_dims", [512, 256])
 MODEL_USE_ATTENTION = get_agent_config("model_use_attention", False)
 MODEL_USE_BATCH_NORM = get_agent_config("model_use_batch_norm", True)
 MODEL_DROPOUT_RATE = get_agent_config("model_dropout_rate", 0.1)
 
-# Advanced Training Options (DQNTrainer)
 ADAPTIVE_EPSILON = get_agent_config("adaptive_epsilon", True)
 EARLY_STOPPING = get_agent_config("early_stopping", True)
 EARLY_STOPPING_PATIENCE = get_agent_config("early_stopping_patience", 10)
 MIN_IMPROVEMENT_THRESHOLD = get_agent_config("min_improvement_threshold", 0.01)
 
-# Agent Training Enhancements (DQNAgent)
 USE_MIXED_PRECISION = get_agent_config("use_mixed_precision", False)
 GRADIENT_ACCUMULATION_STEPS = get_agent_config("gradient_accumulation_steps", 1)
 MAX_GRAD_NORM = get_agent_config("max_grad_norm", 1.0)
 
-# Sensor Default Parameters
 CARLA_DEFAULT_IMAGE_WIDTH = get_environment_config("camera.default_width", 84)
 CARLA_DEFAULT_IMAGE_HEIGHT = get_environment_config("camera.default_height", 84)
 
@@ -165,7 +147,6 @@ CARLA_DEFAULT_RADAR_VERTICAL_FOV = get_environment_config("radar.default_vertica
 CARLA_DEFAULT_RADAR_POINTS_PER_SECOND = get_environment_config("radar.default_points_per_second", 1500)
 CARLA_PROCESSED_RADAR_MAX_DETECTIONS = get_environment_config("radar.processed_max_detections", 20)
 
-# Reward Calculator Parameters
 REWARD_CALC_PENALTY_COLLISION = get_reward_config("penalty_collision", -1000.0)
 REWARD_CALC_REWARD_GOAL_REACHED = get_reward_config("reward_goal_reached", 300.0)
 REWARD_CALC_PENALTY_PER_STEP = get_reward_config("penalty_per_step", -0.1)
@@ -197,7 +178,6 @@ REWARD_CALC_MIN_SPEED_FOR_STEER_PENALTY_KMH = get_reward_config("min_speed_for_s
 REWARD_CALC_PENALTY_SOLID_LANE_CROSS = get_reward_config("penalty_solid_lane_cross", -40.0)
 REWARD_CALC_PENALTY_SIDEWALK = get_reward_config("penalty_sidewalk", -800.0)
 
-# Phase-Specific Sidewalk Detection Parameters
 SIDEWALK_DETECTION_STRAIGHT_PHASES = get_reward_config("sidewalk_detection.straight_phases", {
     "distance_threshold": 1.2,
     "height_threshold": 0.05, 
@@ -222,14 +202,12 @@ SIDEWALK_DETECTION_DEFAULT = get_reward_config("sidewalk_detection.default", {
 
 STOP_AT_GOAL_SPEED_THRESHOLD = get_reward_config("stop_at_goal_speed_threshold", 0.2)
 
-# Distance-based penalty for max steps reached
 MAX_STEPS_DISTANCE_PENALTY_ENABLED = get_reward_config("max_steps_distance_penalty.enabled", True)
 MAX_STEPS_DISTANCE_PENALTY_MAX = get_reward_config("max_steps_distance_penalty.max_penalty", -200.0)
 MAX_STEPS_DISTANCE_PENALTY_MIN = get_reward_config("max_steps_distance_penalty.min_penalty", -50.0)
 MAX_STEPS_DISTANCE_PENALTY_MAX_DISTANCE = get_reward_config("max_steps_distance_penalty.max_distance_threshold", 100.0)
 MAX_STEPS_DISTANCE_PENALTY_CLOSE_MULTIPLIER = get_reward_config("max_steps_distance_penalty.close_distance_multiplier", 3.0)
 
-# Phase 0 Specific Adjustments
 REWARD_CALC_PHASE0_PENALTY_PER_STEP = get_reward_config("phase0.penalty_per_step", -0.01)
 REWARD_CALC_PHASE0_DISTANCE_FACTOR_MULTIPLIER = get_reward_config("phase0.distance_factor_multiplier", 2.5)
 REWARD_CALC_PHASE0_GOAL_REWARD_MULTIPLIER = get_reward_config("phase0.goal_reward_multiplier", 1.5)
@@ -239,16 +217,13 @@ REWARD_CALC_PHASE0_STUCK_MULTIPLIER_REVERSING = get_reward_config("phase0.stuck_
 REWARD_CALC_PHASE0_OFFROAD_PENALTY = get_reward_config("phase0.offroad_penalty", -10.0)
 REWARD_CALC_PHASE0_OFFROAD_NO_WAYPOINT_MULTIPLIER = get_reward_config("phase0.offroad_no_waypoint_multiplier", 1.5)
 
-# Action Mapping
 DISCRETE_ACTION_MAP = get_action_config("discrete_action_map", {})
 DISCRETE_ACTION_MAP_NO_REVERSE = get_action_config("discrete_action_map_no_reverse", {})
 DISCRETE_ACTION_MAP_NO_STEERING = get_action_config("discrete_action_map_no_steering", {})
 NUM_DISCRETE_ACTIONS = len(DISCRETE_ACTION_MAP)
 
-# Curriculum Phases
 CARLA_DEFAULT_CURRICULUM_PHASES = get_curriculum_config("default_phases", [])
 
-# Curriculum Evaluation Settings
 CURRICULUM_EVALUATION_ENABLED = get_curriculum_config("evaluation.enabled", True)
 CURRICULUM_EVALUATION_EPISODES = get_curriculum_config("evaluation.episodes_per_evaluation", 5)
 CURRICULUM_MAX_PHASE_REPEATS = get_curriculum_config("evaluation.max_phase_repeats", 3)
@@ -260,33 +235,27 @@ CURRICULUM_COMPLETION_CRITERIA = get_curriculum_config("evaluation.completion_cr
     "min_driving_score": 55.0
 })
 
-# Comprehensive Evaluation Parameters
 COMPREHENSIVE_EVAL_INTERVAL = get_default_config("comprehensive_eval_interval", 100)
 COMPREHENSIVE_EVAL_MIN_PHASE = get_default_config("comprehensive_eval_min_phase", 3)
 USE_COMPREHENSIVE_FOR_BEST_MODEL = get_default_config("use_comprehensive_for_best_model", True)
 
-# --- Helper function to update config from args ---
 def update_config_from_args(config_module, args):
     """
     Updates the configuration module's attributes with values from argparse.Namespace.
     Only updates if the attribute exists in the config_module and the args value is not None.
     """
     for key, value in vars(args).items():
-        # Convert arg names (e.g., log_level) to config names (e.g., LOG_LEVEL)
         config_key = key.upper()
         if hasattr(config_module, config_key):
             if value is not None:
                 setattr(config_module, config_key, value)
 
-    # Special handling for derived paths if SAVE_DIR is updated by args
     if hasattr(args, 'save_dir') and args.save_dir is not None:
         save_dir_value = args.save_dir
-        # Convert relative path to absolute path based on project root if needed
         if save_dir_value.startswith('./'):
             save_dir_value = os.path.join(project_root, save_dir_value[2:])
         config_module.SAVE_DIR = save_dir_value
 
-    # Update device based on availability
     config_module.DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def get_config_dict(config_module):
