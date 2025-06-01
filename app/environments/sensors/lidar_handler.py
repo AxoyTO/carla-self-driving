@@ -8,13 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple, Union
 
 # Performance optimization imports
-try:
-    import numba
-    from numba import jit, cuda
-    NUMBA_AVAILABLE = True
-except ImportError:
-    NUMBA_AVAILABLE = False
-    logging.warning("Numba not available. Install numba for LIDAR JIT compilation optimizations.")
+import numba
+from numba import jit
 
 try:
     import cupy as cp
@@ -67,7 +62,7 @@ def get_semantic_lidar_observation_space(num_points=DEFAULT_PROCESSED_LIDAR_NUM_
     )
 
 # Numba JIT optimized functions for LIDAR processing
-if NUMBA_AVAILABLE:
+if numba:
     @jit(nopython=True, cache=True, parallel=True)
     def _subsample_points_numba(points: np.ndarray, target_size: int, indices: np.ndarray) -> np.ndarray:
         """Optimized point subsampling using Numba JIT."""
@@ -210,7 +205,7 @@ def _process_semantic_lidar_fallback(points: np.ndarray, num_points_to_keep: int
 # Thread pool processing functions
 def _process_lidar_with_background_optimization(points: np.ndarray, num_points_to_keep: int) -> np.ndarray:
     """Process LIDAR data with best available optimization in background thread."""
-    if NUMBA_AVAILABLE:
+    if numba:
         return _process_lidar_with_numba(points, num_points_to_keep)
     elif USE_GPU_ACCELERATION:
         return _process_lidar_gpu(points, num_points_to_keep, None)
@@ -224,7 +219,7 @@ def _process_lidar_with_numba(points: np.ndarray, num_points_to_keep: int) -> np
     
     if points.shape[0] > num_points_to_keep:
         indices = np.random.choice(points.shape[0], num_points_to_keep, replace=False)
-        if NUMBA_AVAILABLE:
+        if numba:
             return _subsample_points_numba(points, num_points_to_keep, indices)
         else:
             return points[indices].astype(np.float32)
@@ -315,7 +310,7 @@ def process_lidar_data(lidar_measurement: carla.LidarMeasurement, num_points_to_
         return np.zeros((num_points_to_keep, 3), dtype=np.float32)
     
     # Use optimized processing
-    if NUMBA_AVAILABLE:
+    if numba:
         return _process_lidar_with_numba(points_xyz, num_points_to_keep)
     elif USE_GPU_ACCELERATION:
         return _process_lidar_gpu(points_xyz, num_points_to_keep)
@@ -368,7 +363,7 @@ def _parse_lidar_cb_async(weak_self, lidar_data: carla.LidarMeasurement, sensor_
             # Use thread pool for background processing instead of asyncio
             def process_in_background():
                 try:
-                    if NUMBA_AVAILABLE:
+                    if numba:
                         return _process_lidar_with_numba(points_xyz, num_points_processed)
                     elif USE_GPU_ACCELERATION:
                         return _process_lidar_gpu(points_xyz, num_points_processed, None)
@@ -496,7 +491,7 @@ def setup_semantic_lidar_sensor_optimized(world, vehicle, env_ref, semantic_lida
 def get_lidar_performance_stats() -> dict:
     """Get performance statistics for LIDAR processing."""
     return {
-        'numba_available': NUMBA_AVAILABLE,
+        'numba_available': numba,
         'cupy_available': CUPY_AVAILABLE,
         'gpu_acceleration': USE_GPU_ACCELERATION,
         'async_processing': USE_ASYNC_PROCESSING,
