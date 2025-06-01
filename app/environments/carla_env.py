@@ -12,20 +12,19 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 
 import app.config as config
-from .base_env import BaseEnv
-import gymnasium as gym 
-from gymnasium import spaces 
+import gymnasium as gym
+from gymnasium import spaces
 
 from .sensor_manager import SensorManager
-from .vehicle_manager import VehicleManager # Import the new VehicleManager
-from .curriculum_manager import CurriculumManager # Import the new CurriculumManager
-from .reward_calculator import RewardCalculator 
+from .vehicle_manager import VehicleManager
+from .curriculum_manager import CurriculumManager
+from .reward_calculator import RewardCalculator
 from .traffic_manager import TrafficManager
 from utils.pygame_visualizer import PygameVisualizer
 from utils.open3d_visualizer import Open3DLidarVisualizer
-from utils.data_logger import DataLogger # Import the new DataLogger
-from utils import formatting_utils # Import the new formatting utils
-from utils import action_utils # Import the new action utils
+from utils.data_logger import DataLogger
+from utils import formatting_utils
+from utils import action_utils
 
 # For Global Path Planning
 from agents.navigation.global_route_planner import GlobalRoutePlanner

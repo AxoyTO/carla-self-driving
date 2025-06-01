@@ -12,11 +12,10 @@ import time
 # Performance optimization imports
 try:
     import numba
-    from numba import jit, cuda
+    from numba import jit
     NUMBA_AVAILABLE = True
 except ImportError:
     NUMBA_AVAILABLE = False
-    logging.warning("Numba not available. Install numba for JIT compilation optimizations.")
 
 try:
     import cupy as cp

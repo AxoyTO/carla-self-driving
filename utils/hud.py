@@ -1,6 +1,7 @@
+import os
+import carla
 import pygame
-import os # For OS-specific font names
-import carla # For carla.TrafficLightState
+import weakref
 from typing import Optional, Tuple
 from collections import OrderedDict
 
@@ -20,7 +21,6 @@ class HUD:
         actual_font_size_main = fallback_font_size
         font_to_load = None
 
-        # HUD font loading (commented out debug prints for performance)
         print("HUD: Attempting to load main font...")
         
         main_font_loaded = False
@@ -39,28 +39,27 @@ class HUD:
         self.line_height = actual_font_size_main + 6
         print(f"HUD: Successfully loaded main font: '{actual_font_name_main}' with size {actual_font_size_main}")
         
-        self.notification_font = self.font # Default notification to main font for simplicity
+        self.notification_font = self.font
         actual_font_name_notif = "Unknown"
         target_notif_font_size = int(base_font_size * 1.2) 
         fallback_notif_font_size = int(fallback_font_size * 1.2)
-        if target_notif_font_size < 16: target_notif_font_size = 16 # Ensure minimum practical size
+        if target_notif_font_size < 16: target_notif_font_size = 16
         if fallback_notif_font_size < 16: fallback_notif_font_size = 16
         actual_loaded_notif_font_size = 0
 
         print("HUD: Attempting to load notification font...")
         try:
-            # Try to use the same source that worked for the main font, but at the smaller size
-            if font_to_load: # If a specific file/matched name was successfully used for main font
+            if font_to_load:
                 try:
                     self.notification_font = pygame.font.Font(font_to_load, target_notif_font_size)
                     actual_font_name_notif = f"{actual_font_name_main.split(' (')[0]} (source same as main)" # Use original preferred name part
                     actual_loaded_notif_font_size = target_notif_font_size
                     print(f"HUD: Successfully loaded notification font (from main font source): '{actual_font_name_notif}' with size {actual_loaded_notif_font_size}")
                 except (pygame.error, OSError):
-                    self.notification_font = None # Failed, will try full logic below
+                    self.notification_font = None
             
-            if not self.notification_font: # If loading from main font source failed or wasn't available
-                font_name_os_specific_notif = 'courier' if os.name == 'nt' else 'mono' # Same OS specific logic
+            if not self.notification_font:
+                font_name_os_specific_notif = 'courier' if os.name == 'nt' else 'mono'
                 preferred_fonts_available_notif = [x for x in pygame.font.get_fonts() if x is not None]
                 font_to_load_notif = None
                 for pref_name_notif in font_preferences:
@@ -104,29 +103,23 @@ class HUD:
             actual_font_name_notif = "Pygame Default (Fallback)"
             print(f"HUD: Fell back to notification font: '{actual_font_name_notif}' with size {actual_loaded_notif_font_size}")
 
-        if self.notification_font is None: # Ultimate fallback for notification font
-             self.notification_font = self.font # Use main font if all else failed for notification
-             actual_font_name_notif = actual_font_name_main # Copy main font details
+        if self.notification_font is None:
+             self.notification_font = self.font
+             actual_font_name_notif = actual_font_name_main
              actual_loaded_notif_font_size = actual_font_size_main 
              print("HUD: Notification font defaulted to main HUD font.")
         
-        # Print final loaded fonts (can be enabled for debugging)
         if actual_font_name_main != "Unknown": print(f"HUD Main Font: '{actual_font_name_main}', Size: {actual_font_size_main}")
         if actual_font_name_notif != "Unknown": print(f"HUD Notification Font: '{actual_font_name_notif}', Size: {actual_loaded_notif_font_size}")
 
-        # Define the HUD layout structure:
-        # Each item is a list of keys for that block.
-        # "Current View" and "Client FPS" are handled specially before these blocks.
         self.hud_layout = [
-            ["Server FPS"], # Block 1 (after Current View & Client FPS)
+            ["Server FPS"],
             ["Vehicle Model", "Map", "Simulation Time", "Speed (km/h)", 
              "Location (X,Y,Z)", "Compass", "Throttle", "Steer", "Brake", "Gear"], #, "Acceleration", "Gyroscope"],
             ["Episode | Step", "Step Reward", "Episode Score", "Dist to Goal (m)", "Action"],
             ["Traffic Light", "Collision", "Proximity Penalty", "Term Reason"]
         ]
-        # Key for Current View, handled separately at the top
         self.current_view_key_hud = "Current View"
-        # Key for Client FPS, handled separately after Current View
         self.client_fps_key_hud = "Client FPS"
 
         self.text_color = (255, 255, 255)  
@@ -140,17 +133,17 @@ class HUD:
             carla.TrafficLightState.Red: (255, 0, 0),
             carla.TrafficLightState.Yellow: (255, 255, 0),
             carla.TrafficLightState.Green: (0, 255, 0),
-            carla.TrafficLightState.Off: (128, 128, 128), # Grey for off
-            carla.TrafficLightState.Unknown: (100, 100, 100) # Dark grey for unknown
+            carla.TrafficLightState.Off: (128, 128, 128),
+            carla.TrafficLightState.Unknown: (100, 100, 100)
         }
-        self.boolean_box_size = self.line_height - 8 # Smaller than line height
-        self.boolean_box_true_color = (0, 200, 0) # Green for true
-        self.boolean_box_false_color = (150, 0, 0) # Dark Red for false / (100,100,100) for grey outline
+        self.boolean_box_size = self.line_height - 8
+        self.boolean_box_true_color = (0, 200, 0)
+        self.boolean_box_false_color = (150, 0, 0)
 
-        self.world = None # Will be set from PygameVisualizer if needed for server FPS
-        self.clock = None # Will be set from PygameVisualizer for client FPS
-        self.debug_info_cache = OrderedDict() # Cache for data from CarlaEnv
-        self.target_waypoint_location_debug: Optional[Tuple[float, float, float]] = None # Store (x,y,z)
+        self.world = None
+        self.clock = None
+        self.debug_info_cache = OrderedDict()
+        self.target_waypoint_location_debug: Optional[Tuple[float, float, float]] = None
 
     def add_notification(self, text: str, duration_seconds: float = 3.0, color=None):
         if not self.font: return # Should not happen
@@ -160,7 +153,6 @@ class HUD:
         text_surface = font_to_use.render(text, True, text_color_to_use)
         expiry_time = pygame.time.get_ticks() + int(duration_seconds * 1000)
         self.notifications.append({"surface": text_surface, "expiry": expiry_time, "alpha": 255, "original_color": text_color_to_use})
-        # Limit number of notifications to avoid clutter
         max_notifications = 5
         if len(self.notifications) > max_notifications:
             self.notifications = self.notifications[-max_notifications:]
@@ -170,10 +162,8 @@ class HUD:
         if target_waypoint and hasattr(target_waypoint, 'transform') and hasattr(target_waypoint.transform, 'location'):
             loc = target_waypoint.transform.location
             self.target_waypoint_location_debug = (loc.x, loc.y, loc.z)
-            # self.logger.debug(f"HUD target waypoint updated to: {self.target_waypoint_location_debug}")
         else:
             self.target_waypoint_location_debug = None
-            # self.logger.debug("HUD target waypoint cleared.")
 
     def render(self, surface: pygame.Surface, clock: pygame.time.Clock, debug_info: dict):
         """
@@ -183,7 +173,7 @@ class HUD:
             clock (pygame.time.Clock): The Pygame clock for FPS calculation.
             debug_info (dict): A dictionary of information to display.
         """
-        if not self.font: # Should not happen if __init__ is correct
+        if not self.font:
             return
 
         current_display_size = surface.get_size()
@@ -192,12 +182,10 @@ class HUD:
         box_text_gap = 5
         block_spacer_height = self.line_height // 2
 
-        # --- Calculate dynamic widths for alignment --- 
-        # Keys that will be rendered with a label
         keys_for_labels = [self.current_view_key_hud, self.client_fps_key_hud]
         for block in self.hud_layout:
             for key in block:
-                if key in debug_info and not key.startswith('_'): # Only consider keys actually in debug_info
+                if key in debug_info and not key.startswith('_'): 
                     keys_for_labels.append(key)
         
         max_key_width = 0
@@ -206,19 +194,15 @@ class HUD:
                 key_surf = self.font.render(f"{key_text}:", True, self.text_color)
                 max_key_width = max(max_key_width, key_surf.get_width())
         
-        # Calculate actual widest value component based on current debug_info
         widest_value_actual_px = 0
         if self.font:
-            # Check Current View value width
             cv_val_str = str(debug_info.get(self.current_view_key_hud, "N/A"))
             cv_val_surf = self.font.render(cv_val_str, True, self.text_color)
             widest_value_actual_px = max(widest_value_actual_px, cv_val_surf.get_width())
-            # Check Client FPS value width
             fps_val_str = f"{clock.get_fps():.1f}"
             fps_val_surf = self.font.render(fps_val_str, True, self.text_color)
             widest_value_actual_px = max(widest_value_actual_px, fps_val_surf.get_width())
 
-            # Check values for all other keys in the layout
             for block_keys in self.hud_layout:
                 for key_text in block_keys:
                     if key_text in debug_info and not key_text.startswith('_'):
@@ -236,32 +220,27 @@ class HUD:
                         widest_value_actual_px = max(widest_value_actual_px, current_val_width)
 
         content_width = max_key_width + key_value_gap + widest_value_actual_px
-        bg_width = content_width + 20 # +20 for L/R padding
+        bg_width = content_width + 20
 
-        # --- Determine background height --- 
         num_display_lines = 0
-        # Current View
         num_display_lines += 1 
-        # Spacer after Current View
         num_display_lines += 0.5 
-        # Client FPS
         num_display_lines += 1 
 
         for block_idx, block_keys in enumerate(self.hud_layout):
-            # Spacer before each block defined in hud_layout (including the first one after FPS)
             num_display_lines += 0.5 
             actual_keys_in_block = 0
             for key in block_keys:
                 if key in debug_info and not key.startswith('_'):
                     actual_keys_in_block += 1
-            if actual_keys_in_block == 0 and block_idx == 0 and self.hud_layout[0] == ["Server FPS", "Episode | Step"] : # Special case for first block if empty
-                pass # Don't add spacer if first block is empty
-            elif actual_keys_in_block == 0: # if a whole block is empty (no keys from it in debug_info), don't add its spacer nor lines
+            if actual_keys_in_block == 0 and block_idx == 0 and self.hud_layout[0] == ["Server FPS", "Episode | Step"] :
+                pass
+            elif actual_keys_in_block == 0:
                 num_display_lines -= 0.5 # Remove the pre-added spacer for this empty block
                 continue
             num_display_lines += actual_keys_in_block
         
-        bg_height = int(num_display_lines * self.line_height + 10) # +10 for top/bottom padding
+        bg_height = int(num_display_lines * self.line_height + 10)
 
         if bg_width > 0 and bg_height > 0 and self.font:
             try:
@@ -270,9 +249,6 @@ class HUD:
                 surface.blit(bg_surface, (x_offset - 5, y_offset - 5))
             except pygame.error as e: print(f"HUD Error: background surface: {e}")
 
-        # --- Render items based on defined layout --- 
-        
-        # 1. Current View
         key_text = self.current_view_key_hud
         value_str = str(debug_info.get(key_text, "N/A"))
         key_surf = self.font.render(f"{key_text}:", True, self.text_color)
@@ -281,7 +257,6 @@ class HUD:
         surface.blit(val_surf, (x_offset + max_key_width + key_value_gap, y_offset))
         y_offset += self.line_height + block_spacer_height
 
-        # 2. Client FPS
         key_text = self.client_fps_key_hud
         value_str = f"{clock.get_fps():.1f}"
         key_surf = self.font.render(f"{key_text}:", True, self.text_color)
@@ -290,14 +265,13 @@ class HUD:
         surface.blit(val_surf, (x_offset + max_key_width + key_value_gap, y_offset))
         y_offset += self.line_height
 
-        # 3. Iterate through defined blocks and their keys
         for block_idx, block_keys in enumerate(self.hud_layout):
-            if block_idx > 0 or self.client_fps_key_hud in self.hud_layout[0]: # Add spacer if not the very first block after CurrentView/FPS special handling
+            if block_idx > 0 or self.client_fps_key_hud in self.hud_layout[0]:
                  y_offset += block_spacer_height
             
             for key_text in block_keys:
-                if key_text.startswith('_'): continue # Should not be in hud_layout, but safeguard
-                if key_text not in debug_info: continue # Skip if data not provided
+                if key_text.startswith('_'): continue
+                if key_text not in debug_info: continue
 
                 value = debug_info[key_text]
                 key_surf = self.font.render(f"{key_text}:", True, self.text_color)
@@ -323,7 +297,6 @@ class HUD:
                 if y_offset > current_display_size[1] - self.line_height * 3 : break # Early exit if going off screen
             if y_offset > current_display_size[1] - self.line_height * 3 : break
 
-        # --- Render Notifications --- 
         current_time = pygame.time.get_ticks()
         active_notifications = []
         for n in self.notifications:
@@ -341,25 +314,12 @@ class HUD:
         notification_y_offset = current_display_size[1] - 10 
         for i, notif_surface in enumerate(reversed(active_notifications)):
             notification_y_offset -= notif_surface.get_height() + 2 
-            # Check against main HUD y_offset AND potential right panel width
             if notification_y_offset < y_offset + 10 : break 
             surface.blit(notif_surface, (x_offset, notification_y_offset))
             if i >= 4 : break
 
-        # Example of how to add target waypoint to the HUD display:
-        # This would typically be in the section where other episode/goal stats are displayed.
-        # Find an appropriate y_offset or panel section.
-        # Assume debug_info_from_env already contains most data, but we can add our cached target here.
-
-        # For instance, if debug_info_from_env has "Dist to Goal (m)", that's good.
-        # If we want to display raw target coords:
         if self.target_waypoint_location_debug:
             target_text = f"Target XYZ: ({self.target_waypoint_location_debug[0]:.1f}, {self.target_waypoint_location_debug[1]:.1f}, {self.target_waypoint_location_debug[2]:.1f})"
-            # Find a place to render this, e.g., below "Dist to Goal"
-            # self._render_text_line(display_surface, target_text, x_offset, y_offset_for_target, self.font, self.text_color_light_gray)
-            # For now, we assume "Dist to Goal (m)" is already in debug_info_from_env and sufficient.
-            # If not, CarlaEnv._get_pygame_debug_info would need to calculate and add it based on self.target_waypoint.
-            # Or, HUD can calculate it if it has current vehicle location and target_waypoint_location_debug.
 
     def render_sensor_panel(self, surface: pygame.Surface, sensor_info: dict):
         if not self.font or not sensor_info:
@@ -369,7 +329,6 @@ class HUD:
         padding = 10
         key_value_gap = 10
 
-        # 1. Calculate max key and value widths for alignment and background sizing
         max_sensor_key_len_px = 0
         max_sensor_val_len_px = 0
         num_lines_for_bg_calc = 0
@@ -386,8 +345,8 @@ class HUD:
             if val_s_width > max_sensor_val_len_px:
                 max_sensor_val_len_px = val_s_width
             num_lines_for_bg_calc +=1
-            if key == "Attached Sensors" and value == "---": # Account for extra space after this header
-                num_lines_for_bg_calc += 0.33 # Approximate extra third of a line for spacing
+            if key == "Attached Sensors" and value == "---":
+                num_lines_for_bg_calc += 0.33
 
         panel_content_width = max_sensor_key_len_px + key_value_gap + max_sensor_val_len_px
         panel_bg_width = panel_content_width + 2 * padding
@@ -403,7 +362,6 @@ class HUD:
             except pygame.error as e:
                 print(f"HUD Error: Failed to create sensor panel background: {e}")
 
-        # 3. Render the actual sensor text
         y_offset = y_offset_initial
         text_x_start = panel_x_offset + padding
 
@@ -416,9 +374,8 @@ class HUD:
                 surface.blit(value_render_surface, (text_x_start + max_sensor_key_len_px + key_value_gap, y_offset))
             
             y_offset += self.line_height
-            if key == "Attached Sensors" and value == "---": # Add extra space after this header
+            if key == "Attached Sensors" and value == "---":
                 y_offset += self.line_height // 3
 
             if y_offset > surface.get_height() - self.line_height: 
                 break
-    # ... (close method) ... 
