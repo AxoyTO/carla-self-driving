@@ -230,19 +230,13 @@ def setup_logging(log_level_str):
     Args:
         log_level_str (str): The desired logging level as a string (e.g., "INFO", "DEBUG").
     """
-    numeric_log_level = getattr(logging, log_level_str.upper(), None)
-    if not isinstance(numeric_log_level, int):
-        # Fallback to INFO if invalid level string is provided, and log a warning.
-        logging.warning(f"Invalid log level string: '{log_level_str}'. Defaulting to INFO.")
-        numeric_log_level = logging.INFO
-        log_level_str = "INFO" # Update for the confirmation message
-        
+    if isinstance(log_level_str, str):
+        log_level_str = getattr(logging, log_level_str.upper(), logging.INFO)
+    
+    numeric_log_level = int(log_level_str)
     logging.basicConfig(level=numeric_log_level,
                         format='%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S')
     
-    # Get the root logger and confirm the level.
-    # Using a logger specific to this setup function to announce.
-    setup_logger = logging.getLogger(__name__) # Logger for setup_utils module
-    setup_logger.info(f"Logging configured to level: {log_level_str.upper()}")
-    return numeric_log_level # Return the numeric level for convenience 
+    root_logger = logging.getLogger()
+    return numeric_log_level 
