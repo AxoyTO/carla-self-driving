@@ -35,7 +35,6 @@ class SensorDataItem:
     timestamp: float
     priority: int = 1  # Lower number = higher priority
 
-# Numba-optimized functions for data preprocessing
 if NUMBA_AVAILABLE:
     @jit(nopython=True, cache=True)
     def _compress_image_data_numba(image_array: np.ndarray, compression_factor: float) -> np.ndarray:
@@ -44,7 +43,7 @@ if NUMBA_AVAILABLE:
         new_height = int(height * compression_factor)
         new_width = int(width * compression_factor)
         
-        if len(image_array.shape) == 3:  # Color image
+        if len(image_array.shape) == 3:
             compressed = np.zeros((new_height, new_width, image_array.shape[2]), dtype=image_array.dtype)
             for i in range(new_height):
                 for j in range(new_width):
@@ -53,7 +52,7 @@ if NUMBA_AVAILABLE:
                     if orig_i < height and orig_j < width:
                         for c in range(image_array.shape[2]):
                             compressed[i, j, c] = image_array[orig_i, orig_j, c]
-        else:  # Grayscale image
+        else:
             compressed = np.zeros((new_height, new_width), dtype=image_array.dtype)
             for i in range(new_height):
                 for j in range(new_width):
@@ -152,18 +151,15 @@ class AsyncDataLogger:
         self.current_run_save_path = Path(base_save_path) / self.run_name
         self._sensor_save_dirs: Dict[str, Path] = {}
         
-        # Performance configuration
         self.max_workers = max_workers
         self.use_multiprocessing = use_multiprocessing and MULTIPROCESS_AVAILABLE
         self.enable_compression = enable_compression
         self.compression_factor = max(0.1, min(1.0, compression_factor))
         
-        # Async processing components
         self.data_queue = Queue(maxsize=1000)  # Larger queue for burst processing
         self.thread_pool = ThreadPoolExecutor(max_workers=max_workers)
         self.process_pool = ProcessPoolExecutor(max_workers=max_workers) if self.use_multiprocessing else None
         
-        # Background processing
         self._processing_thread = None
         self._stop_processing = threading.Event()
         self._stats = {
@@ -191,21 +187,18 @@ class AsyncDataLogger:
         """Background thread function to process queued data."""
         while not self._stop_processing.is_set():
             try:
-                # Get data from queue with timeout
                 try:
                     data_item = self.data_queue.get(timeout=1.0)
                 except:
-                    continue  # Timeout, check stop condition
+                    continue
                 
-                if data_item is None:  # Sentinel value to stop
+                if data_item is None:
                     break
                 
                 start_time = time.time()
                 
-                # Process the data item
                 self._process_single_item(data_item)
                 
-                # Update statistics
                 processing_time = time.time() - start_time
                 self._stats['items_processed'] += 1
                 self._stats['processing_time_total'] += processing_time
@@ -222,14 +215,11 @@ class AsyncDataLogger:
         """Process a single data item asynchronously."""
         try:
             if self.use_multiprocessing and data_item.sensor_key in ['rgb_camera', 'lidar']:
-                # Use multiprocessing for computationally intensive preprocessing
                 future = self.process_pool.submit(
                     self._preprocess_and_save_mp, 
                     data_item
                 )
-                # Don't wait for completion to avoid blocking
             else:
-                # Use thread pool for I/O bound operations
                 future = self.thread_pool.submit(
                     self._save_sensor_data_sync, 
                     data_item.episode_count,
@@ -282,12 +272,10 @@ class AsyncDataLogger:
                 priority=priority
             )
             
-            # Add to queue (non-blocking)
             try:
                 self.data_queue.put_nowait(data_item)
                 self._stats['items_queued'] += 1
             except:
-                # Queue is full, log warning but don't block
                 self.logger.warning(f"Data queue full, dropping {sensor_key} data for ep{episode_count}_step{step_count}")
                 
         except Exception as e:
@@ -297,17 +285,14 @@ class AsyncDataLogger:
     def _preprocess_and_save_mp(data_item: SensorDataItem) -> bool:
         """Multiprocessing function for preprocessing and saving data."""
         try:
-            # This runs in a separate process
             if data_item.sensor_key == 'rgb_camera' and isinstance(data_item.data, carla.Image):
                 processed_data = preprocess_image_data(data_item.data, 0.7)
-                # Save processed data
                 filename = f"ep{data_item.episode_count:04d}_step{data_item.step_count:05d}_processed.npy"
                 save_path = Path(data_item.data.save_dir) / filename
                 np.save(save_path, processed_data)
                 return True
             elif data_item.sensor_key == 'lidar' and isinstance(data_item.data, carla.LidarMeasurement):
                 processed_data = preprocess_lidar_data(data_item.data)
-                # Save processed data
                 filename = f"ep{data_item.episode_count:04d}_step{data_item.step_count:05d}_processed.npy"
                 save_path = Path(data_item.data.save_dir) / filename
                 np.save(save_path, processed_data)
@@ -325,13 +310,10 @@ class AsyncDataLogger:
 
         try:
             if isinstance(data, carla.Image):
-                # Handle different image types with compression options
                 if self.enable_compression and sensor_key.startswith('rgb'):
-                    # Save both compressed and original for RGB cameras
                     compressed_data = preprocess_image_data(data, self.compression_factor)
                     np.save(save_dir / f"{filename_base}_compressed.npy", compressed_data)
                 
-                # Save original based on sensor type
                 if sensor_key.startswith('rgb'):
                     data.save_to_disk(str(save_dir / f"{filename_base}.png"))
                 elif sensor_key.startswith('depth'):
@@ -343,10 +325,8 @@ class AsyncDataLogger:
             
             elif isinstance(data, carla.LidarMeasurement):
                 if self.enable_compression:
-                    # Save preprocessed/filtered LIDAR data
                     processed_data = preprocess_lidar_data(data)
                     np.save(save_dir / f"{filename_base}_filtered.npy", processed_data)
-                # Save original
                 data.save_to_disk(str(save_dir / f"{filename_base}.ply"))
             
             elif isinstance(data, carla.SemanticLidarMeasurement):
@@ -358,7 +338,7 @@ class AsyncDataLogger:
                     'latitude': data.latitude, 'longitude': data.longitude, 'altitude': data.altitude
                 }
                 with open(save_dir / f"{filename_base}.json", 'w') as f:
-                    json.dump(gnss_dict, f, indent=2)  # Reduced indent for smaller files
+                    json.dump(gnss_dict, f, indent=2)
             
             elif isinstance(data, carla.IMUMeasurement):
                 imu_dict = {
@@ -451,26 +431,21 @@ class AsyncDataLogger:
         """Gracefully shutdown the data logger."""
         self.logger.info("Shutting down AsyncDataLogger...")
         
-        # Stop background processing
         self._stop_processing.set()
         
-        # Wait for queue to be processed
         if not self.data_queue.empty():
             self.logger.info("Waiting for data queue to be processed...")
             try:
-                self.data_queue.join()  # Wait for all tasks to complete
+                self.data_queue.join()
             except:
-                pass  # Queue might not support join()
+                pass
         
-        # Shutdown thread pool
         if self.thread_pool:
             self.thread_pool.shutdown(wait=True)
         
-        # Shutdown process pool
         if self.process_pool:
             self.process_pool.shutdown(wait=True)
         
-        # Wait for processing thread to finish
         if self._processing_thread and self._processing_thread.is_alive():
             self._processing_thread.join(timeout=5.0)
         
@@ -482,7 +457,6 @@ class AsyncDataLogger:
         try:
             self.shutdown()
         except:
-            pass  # Ignore errors during cleanup
+            pass
 
-# Backward compatibility
-DataLogger = AsyncDataLogger  # For existing code that uses DataLogger 
+DataLogger = AsyncDataLogger

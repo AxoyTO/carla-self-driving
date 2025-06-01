@@ -3,26 +3,21 @@ import os
 import sys
 import cProfile
 import pstats
-import glob # Added for directory scanning
-from typing import Optional # Added for older Python compatibility
+import glob
+from typing import Optional
 
-# Add project root to Python path for local development
 current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)  # Go up one level from app/
+project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# Configuration
 import app.config as config
 
-# Utilities and Components
 from utils.logger import Logger as TensorBoardLogger
 from utils.setup_utils import parse_arguments, setup_logging
 from utils.component_initializers import initialize_training_components
 from app.training.dqn_trainer import DQNTrainer
 
-# Define a base directory for TensorBoard logs in the data directory
-# Use absolute path relative to project_root, not relative to current working directory
 TENSORBOARD_BASE_LOG_DIR = os.path.join(project_root, "data", "tensorboard_logs")
 
 def _find_best_model_to_load(base_model_save_dir: str, logger_instance: logging.Logger) -> Optional[str]:
@@ -42,7 +37,6 @@ def _find_best_model_to_load(base_model_save_dir: str, logger_instance: logging.
             with open(score_file_path, "r") as f:
                 score = float(f.read().strip())
             
-            # Determine if this is a driving score or legacy raw score
             score_type = "driving score" if score <= 100 else "legacy raw score"
             logger_instance.debug(f"Found {score_type} {score:.2f} in {score_file_path}")
             
@@ -70,7 +64,6 @@ class TrainingRunner:
         self.numeric_log_level = None
         self.main_logger = None # Logger for the runner itself
         
-        # Components to be initialized and managed
         self.tb_logger = None
         self.env = None
         self.replay_buffer = None
@@ -84,13 +77,10 @@ class TrainingRunner:
         config.update_config_from_args(config, self.args) # Update global config state
         self.numeric_log_level = setup_logging(self.args.log_level)
         
-        # Get a logger for the runner module (or a specific name)
         self.main_logger = logging.getLogger(__name__) 
 
-        # Set log level for Open3D visualizer to WARNING to suppress its INFO message
         logging.getLogger("utils.open3d_visualizer").setLevel(logging.WARNING)
 
-        # Autoload best model if no specific model is requested by user
         if self.args.load_model_from is None:
             self.main_logger.info(f"No specific model to load. Attempting to find best model in {self.args.save_dir}...")
             best_model_path = _find_best_model_to_load(self.args.save_dir, self.main_logger)
@@ -110,7 +100,6 @@ class TrainingRunner:
         else:
             self.main_logger.info("No model specified to load, starting fresh.")
 
-        # Ensure TensorBoard base log directory exists
         os.makedirs(TENSORBOARD_BASE_LOG_DIR, exist_ok=True)
         self.tb_logger = TensorBoardLogger(log_dir=TENSORBOARD_BASE_LOG_DIR, experiment_name=config.EXPERIMENT_NAME)
         self.main_logger.info(f"TensorBoard logger initialized. Logs in: {os.path.abspath(self.tb_logger.run_dir)}")
@@ -120,11 +109,10 @@ class TrainingRunner:
             self.args, config, self.numeric_log_level, self.main_logger # Pass config module
         )
 
-        if self.env is None: # Check if environment initialization failed
+        if self.env is None:
             self.main_logger.error("Failed to initialize training components. Exiting setup.")
-            # self.cleanup() # Call cleanup, but tb_logger might not exist if env failed early.
-            if self.tb_logger: self.tb_logger.close() # Ensure tb_logger is closed if created
-            sys.exit(1) # Exit if components could not be initialized
+            if self.tb_logger: self.tb_logger.close()
+            sys.exit(1)
         self.main_logger.info("Core training components initialized successfully.")
 
         self.main_logger.info("Initializing DQNTrainer...")
@@ -147,14 +135,12 @@ class TrainingRunner:
             self.main_logger.info("Training process interrupted by user.")
         except Exception as e:
             self.main_logger.error(f"An unexpected error occurred during training: {e}", exc_info=True)
-        # Cleanup is called separately by the top-level function
 
     def cleanup(self):
         """Cleans up all resources (environment, loggers)."""
         if self.main_logger:
             self.main_logger.info("Initiating cleanup of resources...")
         else:
-            # If main_logger isn't set up, use a basic print or a global logger if available
             print("Initiating cleanup of resources (main_logger not available).")
 
         if self.env is not None:
@@ -164,7 +150,6 @@ class TrainingRunner:
             self.env = None 
         else:
             if self.main_logger: self.main_logger.info("Environment was not initialized or already cleaned up.")
-            # else: print("Environment was not initialized or already cleaned up.") # Less critical to print this one
 
         if self.tb_logger is not None:
             if self.main_logger: self.main_logger.info("Closing TensorBoard logger...")
@@ -174,8 +159,6 @@ class TrainingRunner:
         else:
             if self.main_logger: self.main_logger.info("TensorBoard logger was not initialized or already cleaned up.")
 
-        # Other components (agent, buffer, model, trainer) typically don't have explicit close methods
-        # unless they manage external resources not tied to env or tb_logger.
         if self.main_logger:
             self.main_logger.info("TrainingRunner cleanup finished.")
         else:
@@ -184,9 +167,9 @@ class TrainingRunner:
 def start_training_session():
     """Entry point function to set up, run, and cleanup a training session."""
     runner = TrainingRunner()
-    main_logger = logging.getLogger("TrainingSession") # General logger before runner's logger is up
+    main_logger = logging.getLogger("TrainingSession")
     should_cleanup = True
-    profiler = None # Initialize profiler to None
+    profiler = None
 
     try:
         runner.setup() # Call setup first to parse arguments
@@ -211,10 +194,6 @@ def start_training_session():
             main_logger.info("Profiler disabled. Printing stats:")
             stats = pstats.Stats(profiler).sort_stats('cumulative') # Sort by cumulative time
             stats.print_stats(30) # Print top 30 functions
-            # You can also dump stats to a file for more detailed analysis with a profile viewer:
-            # stats.dump_stats(os.path.join(runner.args.save_dir if runner.args else ".", "profile_output.prof"))
-            # Ensure runner.args and runner.args.save_dir exist if dumping stats, or provide a default path.
-            # For simplicity, let's ensure save_dir is accessible or use a default like current dir.
             save_dir_for_profile = "."
             if runner and hasattr(runner, 'args') and runner.args and hasattr(runner.args, 'save_dir') and runner.args.save_dir:
                 save_dir_for_profile = runner.args.save_dir
