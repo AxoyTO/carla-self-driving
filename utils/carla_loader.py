@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 import glob
 import logging # For logging messages from this module
 
