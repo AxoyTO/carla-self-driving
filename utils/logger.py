@@ -56,19 +56,3 @@ class Logger:
         """
         self.writer.close()
         print(f"TensorBoard writer closed. Logs saved in {self.run_dir}")
-
-# Example usage (for testing the logger itself)
-# if __name__ == '__main__':
-#     logger = Logger(experiment_name="test_experiment")
-#     for i in range(10):
-#         logger.log_scalar("Test/Value", i * 2, i)
-#         logger.log_episode_stats(
-#             episode=i,
-#             score=i*10,
-#             avg_score=i*5,
-#             epsilon=1.0/(i+1),
-#             total_steps=200,
-#             avg_loss=0.5/(i+1) if i % 2 == 0 else None
-#         )
-#     logger.close()
-#     print(f"Run: tensorboard --logdir={os.path.join('runs', 'test_experiment_...')}") 
