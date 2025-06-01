@@ -1,11 +1,11 @@
 import open3d as o3d
 import numpy as np
-import carla # For type hints
+import carla
 import logging
-from matplotlib import cm # For colormaps
-import threading # Added for threading
-import queue # Added for thread-safe communication
-import time # For sleep in thread loop
+from matplotlib import cm
+import threading
+import queue
+import time
 
 logger = logging.getLogger(__name__)
 
