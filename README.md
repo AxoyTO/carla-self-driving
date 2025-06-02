@@ -668,10 +668,10 @@ pip install -r requirements.txt
 
 ### Code Standards
 
-- **Python Style**: Follow PEP 8 with `ruff` formatting
+- **Python Style**: Follow PEP 8 with `black` formatting
 - **Type Hints**: All functions must have complete type annotations
 - **Docstrings**: Google-style docstrings for all public functions
-- **Testing**: Maintain >90% test coverage with `pytest`
+# - **Testing**: Maintain >90% test coverage with `pytest`
 
 ### Submission Process
 
