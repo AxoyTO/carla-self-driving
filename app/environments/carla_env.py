@@ -28,10 +28,8 @@ from utils import action_utils
 
 # For Global Path Planning
 from agents.navigation.global_route_planner import GlobalRoutePlanner
-# GlobalRoutePlannerDAO is not needed for direct instantiation with GRP for CARLA 0.9.15 GRP
-# from agents.navigation.global_route_planner_dao import GlobalRoutePlannerDAO 
 
-class CarlaEnv(BaseEnv):
+class CarlaEnv(gym.Env):
     def __init__(self, host='localhost', port=2000, town='Town03', timestep=0.05, time_scale=1.0, \
                  image_size=(config.CARLA_DEFAULT_IMAGE_WIDTH, config.CARLA_DEFAULT_IMAGE_HEIGHT), 
                  fov=90, discrete_actions=True, 
@@ -73,8 +71,6 @@ class CarlaEnv(BaseEnv):
         self.latest_sensor_data: Dict[str, Any] = {}
         self._initialize_latest_sensor_data_keys()
 
-        # Performance optimizations use ThreadPoolExecutor instead of async event loops
-        # for better compatibility with CARLA sensor callbacks
 
         self.collision_info = {'count': 0, 'last_intensity': 0.0, 'last_other_actor_id': "N/A", 'last_other_actor_type': "N/A"}
         self.relevant_traffic_light_state_debug = None
@@ -112,24 +108,15 @@ class CarlaEnv(BaseEnv):
         else: self._action_space = spaces.Box(low=np.array([-1.0, -1.0]), high=np.array([1.0, 1.0]), dtype=np.float32)
         self._observation_space = self._define_observation_space()
 
-        self.connect() # Establishes self.client, self.world, self.map
+        self.connect()
         
-        # Global Route Planner (GRP) setup
         self.grp: Optional[GlobalRoutePlanner] = None
         if self.map:
-            # For CARLA 0.9.15, GRP takes the map and sampling_resolution directly
             self.grp = GlobalRoutePlanner(self.map, sampling_resolution=2.0) 
-            # The setup() method for GRP in 0.9.15 is usually implicitly handled by its constructor 
-            # or not explicitly called after instantiation in common examples.
-            # If it has a public setup() and it's necessary, it would be called here.
-            # However, typical usage for 0.9.11+ GRP is direct instantiation.
-            # Let's assume direct instantiation is sufficient as per common usage.
-            # If a distinct self.grp.setup() call is needed and available, it can be added.
             self.logger.info("GlobalRoutePlanner initialized.")
         else:
             self.logger.error("Map not available after connect(), GlobalRoutePlanner NOT initialized.")
         
-        # Initialize managers that depend on a valid world connection
         if self.world and self.map: 
             self._spawn_points = self.map.get_spawn_points() 
             if not self._spawn_points: 
@@ -159,7 +146,7 @@ class CarlaEnv(BaseEnv):
             self.vehicle_manager = None 
             self.curriculum_manager = None
             self.traffic_manager = None
-            self.grp = None # Ensure GRP is also None if map wasn't available
+            self.grp = None
             raise RuntimeError("Failed to initialize CARLA world/map, critical for manager setup.")
             
         self.sensor_manager: Optional[SensorManager] = None
@@ -174,7 +161,6 @@ class CarlaEnv(BaseEnv):
             else:
                 self.logger.error("DataLogger run path not set, disabling sensor data saving."); self.save_sensor_data_enabled = False
 
-        # Reward calculator might need curriculum_manager.phases, ensure curriculum_manager is valid
         if self.curriculum_manager:
             self.reward_calculator = RewardCalculator({}, self.target_speed_kmh, self.curriculum_manager.phases, weakref.ref(self))
         else:
@@ -187,9 +173,7 @@ class CarlaEnv(BaseEnv):
 
     def _define_observation_space(self) -> spaces.Dict:
         obs_spaces = OrderedDict()
-        # Assuming camera_handler and other handlers are still available for this setup phase
-        # If not, these static methods might need to be part of SensorManager or a common util
-        from .sensors import camera_handler as ch # Temp import for this method
+        from .sensors import camera_handler as ch
         from .sensors import lidar_handler as lh
         from .sensors import gnss_imu_handler as gih
         from .sensors import radar_handler as rh
@@ -207,14 +191,14 @@ class CarlaEnv(BaseEnv):
 
     def _init_sensor_manager(self):
         """Initializes or re-initializes the SensorManager."""
-        current_vehicle = self.vehicle_manager.get_vehicle() # Get vehicle from manager
-        if not self.world or not current_vehicle or not current_vehicle.is_alive: # Check current_vehicle
+        current_vehicle = self.vehicle_manager.get_vehicle()
+        if not self.world or not current_vehicle or not current_vehicle.is_alive:
             self.logger.error("Cannot initialize SensorManager: world or vehicle not ready.")
             return
 
         self.sensor_manager = SensorManager(
             world=self.world,
-            vehicle=current_vehicle, # Pass vehicle from manager
+            vehicle=current_vehicle,
             env_ref=weakref.ref(self),
             image_size=(self.image_width, self.image_height),
             fov=self.fov,
@@ -249,14 +233,13 @@ class CarlaEnv(BaseEnv):
         self.relevant_traffic_light_state_debug, self.current_action_for_reward = None, None
         self.collision_flag_debug, self.proximity_penalty_flag_debug, self.on_sidewalk_debug_flag = False, False, False
         self.last_termination_reason_debug = "reset"
-        # Reset sensor data dictionary for the environment
         self._initialize_latest_sensor_data_keys()
 
     def _reset_sensors(self):
         if self.sensor_manager:
             current_vehicle = self.vehicle_manager.get_vehicle()
             if current_vehicle and current_vehicle.is_alive:
-                self.sensor_manager.vehicle = current_vehicle # Ensure SM has the latest vehicle ref
+                self.sensor_manager.vehicle = current_vehicle
                 self.sensor_manager.setup_all_sensors()
             else: self.logger.error("Cannot reset sensors: Vehicle is not valid.")
         else: self.logger.warning("SensorManager not initialized, cannot reset sensors.")
@@ -279,7 +262,6 @@ class CarlaEnv(BaseEnv):
             self.logger.error("Observation space not defined, cannot create zeroed observation")
             return obs
         
-        # Create zeroed arrays for each sensor based on the observation space
         for key, space_def in self._observation_space.spaces.items():
             obs[key] = np.zeros(space_def.shape, dtype=space_def.dtype)
         
@@ -293,40 +275,33 @@ class CarlaEnv(BaseEnv):
         
         final_control = carla.VehicleControl()
         action_name_for_debug = "Unknown"
-        effective_action_idx = action # Store the original or remapped action for reward calc
+        effective_action_idx = action
 
         if self.discrete_actions:
             current_phase_cfg = self.curriculum_manager.get_current_phase_config()
             allow_reverse = current_phase_cfg.get("allow_reverse", False) if current_phase_cfg else False
             allow_steering = current_phase_cfg.get("allow_steering", True) if current_phase_cfg else True
             
-            # Get control and action name from the utility function
             final_control, action_name_for_debug, effective_action_idx = action_utils.get_vehicle_control_from_discrete_action(
                 action_index=action, 
                 allow_reverse=allow_reverse,
                 allow_steering=allow_steering
             )
-            self.current_action_debug = f"{action_name_for_debug} ({action})" # Log with original action index for clarity
+            self.current_action_debug = f"{action_name_for_debug} ({action})"
         
-        else: # Continuous actions
-            # This part remains the same if continuous actions are not using the discrete map
+        else:
             final_control.throttle = float(max(0, action[0])) 
             final_control.brake = float(max(0, -action[0])) # Assuming action[0] < 0 means brake
             final_control.steer = float(action[1])
-            # Continuous actions might not have a simple 'name', so debug string is direct values
             self.current_action_debug = f"T:{final_control.throttle:.2f} S:{final_control.steer:.2f} B:{final_control.brake:.2f}"
-            # For continuous actions, effective_action_idx might not be applicable unless mapped.
-            # For now, current_action_for_reward will store the raw continuous action tuple/array.
-            # If RewardCalculator needs a discrete-like index for continuous, that needs specific mapping.
-            effective_action_idx = None # Or some other placeholder for continuous
+            effective_action_idx = None
             
         vehicle.apply_control(final_control)
-        # Store the effective action index (remapped if unknown) or the raw continuous action for reward calculation
         self.current_action_for_reward = effective_action_idx if self.discrete_actions else action
 
     def _update_debug_info(self):
         vehicle = self.vehicle_manager.get_vehicle()
-        if vehicle and vehicle.is_alive: # Use local var vehicle
+        if vehicle and vehicle.is_alive:
             velocity_vector = vehicle.get_velocity()
             vehicle_transform = vehicle.get_transform()
             vehicle_forward_vector = vehicle_transform.get_forward_vector()
@@ -334,14 +309,14 @@ class CarlaEnv(BaseEnv):
                 [velocity_vector.x, velocity_vector.y, velocity_vector.z],
                 [vehicle_forward_vector.x, vehicle_forward_vector.y, vehicle_forward_vector.z]
             )
-            self._update_relevant_traffic_light(vehicle) # Pass vehicle if needed by this func
+            self._update_relevant_traffic_light(vehicle)
         else:
             self.forward_speed_debug = 0.0
             self.relevant_traffic_light_state_debug = None
 
     def _update_relevant_traffic_light(self, vehicle: Optional[carla.Actor]): # Added vehicle param
         self.relevant_traffic_light_state_debug = None
-        if vehicle and self.map: # Use passed vehicle
+        if vehicle and self.map:
             tl_actor = vehicle.get_traffic_light()
             if tl_actor and isinstance(tl_actor, carla.TrafficLight):
                 self.relevant_traffic_light_state_debug = tl_actor.get_state()
@@ -364,25 +339,22 @@ class CarlaEnv(BaseEnv):
         self.vehicle_manager.destroy_vehicle()
         self._reset_environment_state()
         
-        # Determine start_spawn_transform AND final_destination_waypoint from CurriculumManager
         start_spawn_transform, final_destination_waypoint = self.curriculum_manager.determine_spawn_and_target()
         
         if start_spawn_transform is None or final_destination_waypoint is None:
             self.logger.critical("CRITICAL FALLBACK: CurriculumManager failed to provide valid spawn or target. Defaulting.")
             if not self._spawn_points: raise RuntimeError("Map has no spawn points, cannot proceed.")
             start_spawn_transform = random.choice(self._spawn_points)
-            # Fallback target: a waypoint ~50-100m ahead if possible, or random if not.
             temp_start_wp = self.map.get_waypoint(start_spawn_transform.location, project_to_road=True, lane_type=carla.LaneType.Driving)
             if temp_start_wp and temp_start_wp.next(50.0):
                 final_destination_waypoint = random.choice(temp_start_wp.next(50.0))
-            else: # Absolute fallback for target
+            else:
                 final_destination_waypoint = self.map.get_waypoint(random.choice(self._spawn_points).location, project_to_road=True, lane_type=carla.LaneType.Driving)
-            if not final_destination_waypoint: # Even more fallback
+            if not final_destination_waypoint:
                 final_destination_waypoint = self.map.get_waypoint(self.world.get_random_location_from_navigation())
             if not final_destination_waypoint: raise RuntimeError("Cannot determine a valid final_destination_waypoint even with fallbacks.")
             self.logger.warning(f"Fallback: Start: {start_spawn_transform.location}, Target: {final_destination_waypoint.transform.location}")
 
-        # Generate global plan to the curriculum-defined final_destination_waypoint
         self.global_plan = []
         self.current_global_plan_segment_index = 0
         self.global_plan_ended_logged = False
@@ -390,7 +362,7 @@ class CarlaEnv(BaseEnv):
             try:
                 self.global_plan = self.grp.trace_route(
                     start_spawn_transform.location, 
-                    final_destination_waypoint.transform.location # Use location from the Waypoint object
+                    final_destination_waypoint.transform.location
                 )
                 if not self.global_plan:
                     self.logger.warning(f"GRP returned empty plan from {start_spawn_transform.location} to {final_destination_waypoint.transform.location}. Will use direct target.")
@@ -402,8 +374,7 @@ class CarlaEnv(BaseEnv):
             self.logger.warning("GRP not available or start/target missing. Cannot generate global plan. Will use direct target.")
 
         if self.global_plan:
-            # Find the first waypoint that's far enough from spawn to avoid immediate goal-reached rewards
-            min_distance_to_first_target = self.reward_calculator.WAYPOINT_REACHED_THRESHOLD * 2.0  # Use 2x threshold as minimum
+            min_distance_to_first_target = self.reward_calculator.WAYPOINT_REACHED_THRESHOLD * 2.0
             self.target_waypoint = None
             
             for i, (waypoint, road_option) in enumerate(self.global_plan):
@@ -414,14 +385,11 @@ class CarlaEnv(BaseEnv):
                     self.logger.debug(f"Selected waypoint {i} as first target (distance: {distance_from_spawn:.2f}m from spawn)")
                     break
             
-            # If no waypoint in the plan is far enough, use the final destination directly
             if self.target_waypoint is None:
                 self.target_waypoint = final_destination_waypoint
                 self.current_global_plan_segment_index = len(self.global_plan) - 1  # Point to last waypoint
                 self.logger.warning(f"No waypoint in global plan far enough from spawn. Using final destination as target.")
         else:
-            # If no global plan (e.g., GRP failed or for very simple curriculum targets),
-            # self.target_waypoint is the final_destination_waypoint itself.
             self.target_waypoint = final_destination_waypoint
 
         new_vehicle = self.vehicle_manager.spawn_vehicle(start_spawn_transform)
@@ -430,7 +398,6 @@ class CarlaEnv(BaseEnv):
             return self._get_zeroed_observation(), {"error": "vehicle_spawn_failed", "termination_reason": "vehicle_spawn_failed"}
             
         self.previous_location = new_vehicle.get_location()
-        # dist_to_goal_debug should be to the final curriculum-defined destination
         self.dist_to_goal_debug = self.previous_location.distance(final_destination_waypoint.transform.location)
 
         self._init_sensor_manager()
@@ -444,9 +411,7 @@ class CarlaEnv(BaseEnv):
 
         if self.enable_pygame_display and self.visualizer:
             self.visualizer.reset_notifications() 
-            # HUD should show the current segment target (self.target_waypoint)
             self.visualizer.update_goal_waypoint_debug(self.target_waypoint)
-            # Render the HUD immediately to show the true starting episode score of 0.0
             self._render_pygame()
             
         self.logger.debug(f"Reset complete. Vehicle: {new_vehicle.id}. Final Curriculum Target: {final_destination_waypoint.transform.location}. Next GRP Target: {self.target_waypoint.transform.location if self.target_waypoint else 'N/A'}")
@@ -474,16 +439,14 @@ class CarlaEnv(BaseEnv):
         current_loc = vehicle.get_location()
         observation = self._get_observation()
         
-        # Update distance to the *final* destination of the global plan for HUD
         if self.global_plan:
             final_destination_location = self.global_plan[-1][0].transform.location
             self.dist_to_goal_debug = current_loc.distance(final_destination_location)
-        elif self.target_waypoint: # Fallback if no global plan (should be rare)
+        elif self.target_waypoint:
              self.dist_to_goal_debug = current_loc.distance(self.target_waypoint.transform.location)
         else:
             self.dist_to_goal_debug = float('inf')
 
-        # Check if current self.target_waypoint (segment target) is reached
         segment_target_reached = False
         if self.target_waypoint:
             if current_loc.distance(self.target_waypoint.transform.location) < self.reward_calculator.WAYPOINT_REACHED_THRESHOLD:
@@ -491,13 +454,11 @@ class CarlaEnv(BaseEnv):
                 self.current_global_plan_segment_index += 1
                 if self.current_global_plan_segment_index < len(self.global_plan):
                     self.target_waypoint = self.global_plan[self.current_global_plan_segment_index][0]
-                    # self.logger.debug(f"Advanced to next segment in global plan. New target: {self.target_waypoint.transform.location}")
                     if self.visualizer: self.visualizer.update_goal_waypoint_debug(self.target_waypoint)
                 else:
                     if not self.global_plan_ended_logged:
                         self.logger.debug("Reached end of global plan segments.")
                         self.global_plan_ended_logged = True
-                    # self.target_waypoint will remain the last one, _check_done handles final goal
 
         self.collision_flag_debug, self.on_sidewalk_debug_flag, self.proximity_penalty_flag_debug = False, False, False
         
@@ -519,7 +480,7 @@ class CarlaEnv(BaseEnv):
                 segment_target_reached=segment_target_reached, 
                 distance_to_final_goal=self.dist_to_goal_debug, 
                 lane_invasion_event=self.latest_sensor_data.get('lane_invasion_event'),
-                current_road_option=current_road_option # Pass current road option
+                current_road_option=current_road_option
             )
 
         self.latest_sensor_data['lane_invasion_event'] = None 
@@ -534,11 +495,9 @@ class CarlaEnv(BaseEnv):
         self.episode_score_debug += reward
         self.previous_location = current_loc
         
-        # _check_done will now use the final destination of the global plan
         terminated, term_info = self._check_done(current_loc, final_destination_location if self.global_plan else None)
         self.last_termination_reason_debug = term_info.get("termination_reason", "terminated") if terminated else "Running"
 
-        # Apply distance-based penalty if terminated due to max steps reached
         if terminated and term_info.get("termination_reason") == "max_steps_reached":
             distance_penalty = self.reward_calculator.calculate_max_steps_distance_penalty(
                 current_location=current_loc,
@@ -546,7 +505,7 @@ class CarlaEnv(BaseEnv):
                 distance_to_final_goal=self.dist_to_goal_debug
             )
             
-            if distance_penalty != 0.0:  # Only apply and log if penalty is enabled and non-zero
+            if distance_penalty != 0.0:
                 reward += distance_penalty
                 self.step_reward_debug += distance_penalty
                 self.episode_score_debug += distance_penalty
@@ -568,7 +527,7 @@ class CarlaEnv(BaseEnv):
     def _destroy_actors(self):
         self.logger.debug("CarlaEnv: Destroying actors.")
         if self.sensor_manager: self.sensor_manager.cleanup(); self.sensor_manager = None
-        self.vehicle_manager.destroy_vehicle() # Use VehicleManager to destroy vehicle
+        self.vehicle_manager.destroy_vehicle()
         
         self._initialize_latest_sensor_data_keys()
         self.collision_info = {'count': 0, 'last_intensity': 0.0, 'last_other_actor_id': "N/A", 'last_other_actor_type': "N/A"}
@@ -581,8 +540,6 @@ class CarlaEnv(BaseEnv):
             settings = self.world.get_settings(); settings.synchronous_mode = False; settings.fixed_delta_seconds = None
             self.world.apply_settings(settings) 
             
-        # Thread pools will be cleaned up automatically by the garbage collector
-                
         self.world, self.client = None, None
         self.logger.info("Closed CARLA environment.")
         if self.episode_count > 0:
@@ -602,8 +559,6 @@ class CarlaEnv(BaseEnv):
         if not self.o3d_lidar_vis.is_active():
             if self.o3d_lidar_vis.activate():
                 self.logger.info("Open3D LIDAR visualizer activated. Will update in main render loop.")
-                # Initial data update upon activation can be done here or rely on the next _render_pygame call
-                # For simplicity, we'll let _render_pygame handle updates if active.
             else:
                 self.logger.error("Failed to activate Open3D LIDAR visualizer window.")
         else:
@@ -646,11 +601,9 @@ class CarlaEnv(BaseEnv):
         if self.reward_calculator.last_on_sidewalk_flag:
             info["termination_reason"] = "on_sidewalk"
             
-            # Add detailed sidewalk detection information
             if hasattr(self.reward_calculator, 'last_sidewalk_detection_details'):
                 details = self.reward_calculator.last_sidewalk_detection_details
                 
-                # Create comprehensive termination message with phase awareness
                 violation_summary = f"Sidewalk violation in {details.get('phase_type', 'unknown')} phase"
                 detection_method = details.get('method', 'unknown')
                 detection_reason = details.get('detection_reason', 'unknown')
@@ -663,12 +616,10 @@ class CarlaEnv(BaseEnv):
                     f"Height difference: {details.get('height_difference', 0):.2f}m"
                 ]
                 
-                # Add lane change analysis if available
                 lane_change_analysis = details.get('lane_change_analysis', '')
                 if lane_change_analysis:
                     termination_details.append(f"Lane change analysis: {lane_change_analysis}")
                 
-                # Add threshold information for context
                 thresholds = details.get('thresholds_used', {})
                 if thresholds:
                     threshold_info = []
@@ -680,7 +631,6 @@ class CarlaEnv(BaseEnv):
                     if threshold_info:
                         termination_details.append(f"Thresholds: {', '.join(threshold_info)}")
                 
-                # Log with color coding based on phase type
                 phase_type = details.get('phase_type', 'unknown')
                 if phase_type == 'straight':
                     self.logger.info(f"SIDEWALK TERMINATION (STRICT): {violation_summary}")
@@ -689,11 +639,9 @@ class CarlaEnv(BaseEnv):
                 else:
                     self.logger.info(f"SIDEWALK TERMINATION: {violation_summary}")
                 
-                # Log detailed breakdown
                 for detail in termination_details:
                     self.logger.info(f"   - {detail}")
                     
-                # Additional context for steering phases
                 if phase_type == 'steering' and details.get('is_lane_change', False):
                     self.logger.info(f"   NOTE: Detected during lane change in steering phase - confirmed curb violation")
                 elif phase_type == 'straight' and details.get('is_lane_change', False):
@@ -705,9 +653,8 @@ class CarlaEnv(BaseEnv):
             info["termination_reason"] = "collision"
             return True, info
 
-        # Use final_destination_loc if provided (from global plan), otherwise use self.target_waypoint (old behavior)
         target_loc_for_done_check = final_destination_loc
-        if target_loc_for_done_check is None and self.target_waypoint: # Fallback if no global plan final dest
+        if target_loc_for_done_check is None and self.target_waypoint:
             target_loc_for_done_check = self.target_waypoint.transform.location
 
         if target_loc_for_done_check and current_location:
@@ -715,8 +662,6 @@ class CarlaEnv(BaseEnv):
             goal_thresh = self.reward_calculator.WAYPOINT_REACHED_THRESHOLD 
             
             if dist_to_target < goal_thresh:
-                # If we are checking against the final destination of a plan, this means mission accomplished
-                # If target_loc_for_done_check was just a segment target (no global plan), it's also goal reached for that segment.
                 current_phase_cfg = self.curriculum_manager.get_current_phase_config()
                 require_stop = current_phase_cfg.get("require_stop_at_goal", False) if current_phase_cfg else False
                 
@@ -761,7 +706,6 @@ class CarlaEnv(BaseEnv):
         try:
             os.makedirs(self.current_run_sensor_save_path, exist_ok=True)
             self.logger.info(f"Sensor data save dir: {self.current_run_sensor_save_path}")
-            # This logic might also move to SensorManager or a DataLogger
             log_keys = [k for k in ['rgb_camera', 'lidar', 'semantic_lidar'] if self._observation_space and k in self._observation_space.spaces]
             for key in log_keys:
                 s_path = os.path.join(self.current_run_sensor_save_path, key)
@@ -798,7 +742,6 @@ class CarlaEnv(BaseEnv):
             debug_info["_vehicle_world_yaw_rad"] = math.radians(vehicle_transform.rotation.yaw)
             debug_info["_radar_to_vehicle_transform"] = self.radar_to_vehicle_transform 
             
-            # Get processed IMU data (which is a NumPy array)
             imu_numpy_array = self.latest_sensor_data.get('imu') 
             if imu_numpy_array is not None and isinstance(imu_numpy_array, np.ndarray) and imu_numpy_array.shape == (6,):
                 accel_str = f"({imu_numpy_array[0]:.2f}, {imu_numpy_array[1]:.2f}, {imu_numpy_array[2]:.2f})"
@@ -849,42 +792,31 @@ class CarlaEnv(BaseEnv):
             Otherwise, returns None (for 'human' mode, display is handled by PygameVisualizer).
         """
         if mode == 'human':
-            # Pygame rendering is handled by self._render_pygame() called in step()
-            # if self.enable_pygame_display and self.visualizer:
-            #     self.visualizer.render_once() # Or however PygameVisualizer exposes a direct render call
-            # For now, just log that human mode relies on the continuous Pygame updates
             if not self.enable_pygame_display:
                 self.logger.debug("Render(human) called, but Pygame display is not enabled. No direct output from this method.")
             return None # Human mode rendering is event-driven via Pygame
         
         elif mode == 'rgb_array':
-            # Attempt to return the current main RGB camera image
-            # This assumes 'rgb_camera' key holds the processed numpy array
             if self.latest_sensor_data and 'rgb_camera' in self.latest_sensor_data:
                 rgb_image = self.latest_sensor_data['rgb_camera']
                 if isinstance(rgb_image, np.ndarray):
                     return rgb_image
-                else: # This else corresponds to `if isinstance(rgb_image, np.ndarray):`
+                else:
                     self.logger.warning("Render(rgb_array): 'rgb_camera' data is not a numpy array.")
-                    return None # Or a blank image of correct dimensions
-            else: # This else corresponds to `if self.latest_sensor_data and 'rgb_camera' in self.latest_sensor_data:`
+                    return None
+            else:
                 self.logger.warning("Render(rgb_array): No 'rgb_camera' data available in latest_sensor_data.")
-                # Fallback: return a black image of the expected shape if observation space is defined
                 if self._observation_space and 'rgb_camera' in self._observation_space.spaces:
                     shape = self._observation_space.spaces['rgb_camera'].shape
                     dtype = self._observation_space.spaces['rgb_camera'].dtype
                     return np.zeros(shape, dtype=dtype)
                 return None
-        else: # This else corresponds to `if mode == 'human':` and `elif mode == 'rgb_array':`
-            # Call super().render() if BaseEnv implements other modes, or raise error
-            # For now, just log unsupported mode.
-            self.logger.warning(f"Render called with unsupported mode: {mode}")
-            # return super().render(mode=mode) # If BaseEnv has a render method
+        else:
+            self.logger.warning(f"Render mode '{mode}' not supported. Only 'human' mode is implemented.")
             return None
 
     def _initialize_latest_sensor_data_keys(self):
         """Helper to initialize/re-initialize self.latest_sensor_data with None for all known sensor keys."""
-        # Ensure self.latest_sensor_data is a dictionary before trying to assign to it.
         if not hasattr(self, 'latest_sensor_data') or not isinstance(self.latest_sensor_data, dict):
             self.latest_sensor_data = {}
 
@@ -907,9 +839,8 @@ class CarlaEnv(BaseEnv):
             An OrderedDict representing the observation, or a zeroed observation on failure.
         """
         observation = None
-        # Check for primary agent camera (e.g., 'rgb_camera') and display camera if active
-        agent_cam_key = 'rgb_camera' # Assuming this is the primary camera for the agent
-        display_cam_key = 'spectator_camera' # Or the main display camera key used by PygameVisualizer
+        agent_cam_key = 'rgb_camera'
+        display_cam_key = 'spectator_camera'
 
         agent_cam_ready = False
         display_cam_ready = not self.enable_pygame_display # If display not enabled, it's considered "ready"
@@ -919,15 +850,11 @@ class CarlaEnv(BaseEnv):
 
         for i in range(max_initial_ticks):
             ticks_done = i + 1
-            # Get current observation using the new manager-based method
             current_obs_data = self._get_observation() 
             
-            # Check agent camera readiness (e.g., is the numpy array populated?)
             if agent_cam_key in current_obs_data and current_obs_data[agent_cam_key] is not None:
-                # Add a more specific check if needed, e.g., np.any(current_obs_data[agent_cam_key])
                 agent_cam_ready = True 
             
-            # Check display camera readiness if display is enabled
             if self.enable_pygame_display and display_cam_key in self.latest_sensor_data:
                 if self.latest_sensor_data[display_cam_key] is not None:
                     display_cam_ready = True
@@ -939,21 +866,18 @@ class CarlaEnv(BaseEnv):
             
             if self.world and self.world.get_settings().synchronous_mode:
                 self.world.tick()
-            else: # Should not happen if synchronous_mode is True as expected
+            else:
                 time.sleep(self.timestep) 
-            
-            # Optional: A small sleep, especially if not in perfect sync or for very fast ticks
-            # time.sleep(self.timestep / max(1.0, self.time_scale) / 2) 
 
         if not (agent_cam_ready and display_cam_ready):
             self.logger.error(f"Failed to get initial observation/display data after {max_initial_ticks} ticks.")
             self.logger.debug(f"Sync status: agent_cam_ready={agent_cam_ready} ({agent_cam_key}), display_cam_ready={display_cam_ready} ({display_cam_key})")
-            if observation is None: # If loop finished without break and obs still None
-                observation = self._get_observation() # Try one last time
+            if observation is None:
+                observation = self._get_observation()
             if not agent_cam_ready and (observation is None or observation.get(agent_cam_key) is None):
                  self.logger.warning(f"Agent camera '{agent_cam_key}' data missing. Returning zeroed observation.")
                  return self._get_zeroed_observation()
-            if observation is None: # Should be caught by the above, but as a safeguard
+            if observation is None:
                 self.logger.warning("Full observation is None after sync attempts. Returning zeroed observation.")
                 return self._get_zeroed_observation()
         
@@ -964,17 +888,12 @@ class CarlaEnv(BaseEnv):
         if not self.enable_pygame_display or not self.visualizer or not self.visualizer.is_active:
             return
 
-        # Get the key for the current view in PygameVisualizer
         current_view_key_for_pygame = self.visualizer.get_current_view_key()
         
-        # Get the raw sensor data item corresponding to this view
-        # This data comes from self.latest_sensor_data, which is updated by sensor callbacks
         raw_sensor_object_to_display = self.latest_sensor_data.get(current_view_key_for_pygame)
         
-        # Prepare debug information dictionary
         debug_info_dict = self._get_pygame_debug_info()
 
-        # Special handling for LIDAR range if that view is active
         lidar_range_for_vis = 0.0
         if current_view_key_for_pygame == 'lidar':
             if hasattr(self, 'lidar_config') and self.lidar_config and 'range' in self.lidar_config:
@@ -985,23 +904,18 @@ class CarlaEnv(BaseEnv):
             else:
                 self.logger.debug("LIDAR range config not found in CarlaEnv for visualizer, PygameVisualizer will use its default.")
 
-        # Call the visualizer's main render method
         if not self.visualizer.render(raw_sensor_object_to_display, 
                                      current_view_key_for_pygame, 
                                      debug_info_dict,
                                      lidar_sensor_range_from_env=lidar_range_for_vis):
-            # If visualizer.render returns False, it means pygame was closed by user
             self.enable_pygame_display = False 
             if self.visualizer:
                 self.visualizer.close() 
                 self.visualizer = None
             self.logger.info("Pygame display has been closed by user and disabled.")
         
-        # Update Open3D LIDAR visualizer if it's active
         if self.o3d_lidar_vis and self.o3d_lidar_vis.is_active():
-            # Use the raw CARLA measurement for Open3D, not the agent's processed numpy array
             raw_lidar_for_o3d = self.latest_sensor_data.get('lidar_raw') 
-            # Could add a toggle or logic here to choose 'semantic_lidar_raw' if desired
             
             ego_vehicle = self.vehicle_manager.get_vehicle()
             ego_transform = ego_vehicle.get_transform() if ego_vehicle and ego_vehicle.is_alive else None
@@ -1010,13 +924,3 @@ class CarlaEnv(BaseEnv):
                 if not self.o3d_lidar_vis.update_data(raw_lidar_for_o3d, ego_transform):
                     self.logger.info("Open3D LIDAR window was closed by user during update.")
                     self.o3d_lidar_vis.close()
-            # else: 
-                # logger.debug("O3D: Raw LIDAR data or ego_transform not available for update.")
-
-    # Removed vehicle setup methods (_setup_vehicle_blueprint, _setup_vehicle_physics, _setup_vehicle_autopilot, _spawn_vehicle, _reset_vehicle_state)
-    # These are now handled by VehicleManager
-    # Removed old _destroy_actors, now uses VehicleManager and SensorManager cleanup.
-    # Kept _determine_spawn_and_target and curriculum logic for now.
-    # Kept _update_relevant_traffic_light, _process_collision_event (event handlers)
-    # Kept _get_pygame_debug_info, _format_time, _render_pygame, _synchronize_initial_observation (UI/Sync related)
-    # Kept _get_zeroed_observation (utility)
